@@ -163,7 +163,7 @@ USAGE
     gpxHead = '''
 <?xml version="1.0" encoding="utf-8"?>
 <gpx version="1.0"
- creator="ExifTool 11.88"
+ creator="extract_gpx.pl by Rob Groves"
  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
  xmlns="http://www.topografix.com/GPX/1/0"
  xsi:schemaLocation="http://www.topografix.com/GPX/1/0 http://www.topografix.com/GPX/1/0/gpx.xsd">
