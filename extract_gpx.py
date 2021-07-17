@@ -78,7 +78,7 @@ USAGE
         # Setup argument parser
         parser = ArgumentParser(description=program_license, formatter_class=RawDescriptionHelpFormatter)
         parser.add_argument("-e", "--extract", dest="extractDates", action="store_true", help="extract all dates that have tracks associated with them in input file", default=False)
-        parser.add_argument("-d", "--date", dest="trackDatetime", help="extract track from datetime (ISO format yyyy-mm-dd [hh:mm:ss]) [default: %(default)s]", default=today)
+        parser.add_argument("-d", "--date", dest="trackDatetimes", action="append", help="extract track from datetime (ISO format yyyy-mm-dd [hh:mm:ss]). Can be specified multiple times to append.", default=[])
         parser.add_argument("-o", "--output", dest="outputFile", help="direct output to this destination [default: %(default)s]", default='extracted_track.gpx')
         parser.add_argument("-i", "--input", dest="inputFile", help="source gpx file containing one or more tracks [default: %(default)s]", default='Current.gpx')
         # Process arguments
@@ -87,17 +87,23 @@ USAGE
         except Exception as e:
             raise(e)
 
-        trackDatetime = args.trackDatetime            
-        try:
-            checkedDatetime = datetime.fromisoformat(trackDatetime)
-        except Exception as e:
+        trackDatetimes = args.trackDatetimes
+        if len(trackDatetimes) == 0:
             sys.stderr.write(program_name + ":\n")
-            sys.stderr.write(indent + repr(e)+"\n")
+            sys.stderr.write(indent + "no datetime specified with -d option")
             return 2
-        if len(trackDatetime.strip()) > 10:
-            trackDatetime = checkedDatetime.strftime('%Y-%m-%d %H:%M')
-        else:
-            trackDatetime = checkedDatetime.strftime('%Y-%m-%d')
+        parsedTrackDatetimes = []
+        for trackDatetime in trackDatetimes:
+            try:
+                checkedDatetime = datetime.fromisoformat(trackDatetime)
+            except Exception as e:
+                sys.stderr.write(program_name + ":\n")
+                sys.stderr.write(indent + repr(e)+"\n")
+                return 2
+            if len(trackDatetime.strip()) > 10:
+                parsedTrackDatetimes.append(checkedDatetime.strftime('%Y-%m-%d %H:%M'))
+            else:
+                parsedTrackDatetimes.append(checkedDatetime.strftime('%Y-%m-%d'))
         inputFile = args.inputFile
         outputFile = args.outputFile
         extractDates = args.extractDates
@@ -142,20 +148,22 @@ USAGE
             return 2
         return 0
     try:
-        trackNames = gpxSoup.find_all('name', string=re.compile(trackDatetime))
-        if len(trackNames) > 0:
-            if len(trackNames) > 1:
-                sys.stderr.write(program_name + ":\n")
-                sys.stderr.write(indent + "More than one track found for that date in '" + inputFile+"'\n")
-                for name in trackNames:
-                    print(name.get_text())
-                return 2
+        selectedTracks = []
+        for trackDatetime in parsedTrackDatetimes:
+            trackNames = gpxSoup.find_all('name', string=re.compile(trackDatetime))
+            if len(trackNames) > 0:
+                if len(trackNames) > 1:
+                    sys.stderr.write(program_name + ":\n")
+                    sys.stderr.write(indent + "More than one track found for that date in '" + inputFile+"'\n")
+                    for name in trackNames:
+                        print(name.get_text())
+                    return 2
+                else:
+                    selectedTracks.append(trackNames[0].find_parent('trk').prettify())
             else:
-                selectedTrack = trackNames[0].find_parent('trk').prettify()
-        else:
-            sys.stderr.write(program_name + ":\n")
-            sys.stderr.write(indent + "No matching track found in '" + inputFile+"'\n")
-            return 2 
+                sys.stderr.write(program_name + ":\n")
+                sys.stderr.write(indent + "No matching track for datetime '" + trackDatetime + "' found in '" + inputFile+"'\n")
+                return 2 
     except Exception as e:
         sys.stderr.write(program_name + ":\n")
         sys.stderr.write(indent + repr(e)+"\n")
@@ -167,10 +175,16 @@ USAGE
  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
  xmlns="http://www.topografix.com/GPX/1/0"
  xsi:schemaLocation="http://www.topografix.com/GPX/1/0 http://www.topografix.com/GPX/1/0/gpx.xsd">
+ <trk>
  '''
     gpxTail = '''
-    </gpx>'''
-    outString = gpxHead + selectedTrack + gpxTail
+    </trk>
+    </gpx>
+    '''
+    combinedTracks = ''
+    for selectedTrack in selectedTracks:
+        combinedTracks = combinedTracks + selectedTrack.replace('<trk>', '').replace('</trk>','')
+    outString = gpxHead + combinedTracks + gpxTail
     try:
         with open(outputFile, 'w') as f:
                 f.write(outString)
@@ -180,7 +194,7 @@ USAGE
         sys.stderr.write(indent + " " + repr(e)+"\n")
         return 2
     if DEBUG:
-        print("trackDatetime: " + trackDatetime)
+        print("trackDatetime: " + str(parsedTrackDatetimes))
         print("inputFile: " + inputFile)
         print("outputFile: " + outputFile)
         print("Length of output file string: " + str(len(outString)))
