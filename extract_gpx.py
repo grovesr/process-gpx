@@ -78,6 +78,7 @@ USAGE
         # Setup argument parser
         parser = ArgumentParser(description=program_license, formatter_class=RawDescriptionHelpFormatter)
         parser.add_argument("-e", "--extract", dest="extractDates", action="store_true", help="extract all dates that have tracks associated with them in input file", default=False)
+        parser.add_argument("-c", "--combine", dest="combineAllTracksForDate", action="store_true", help="combine all tracks that match the datetime specified into one output file", default=False)
         parser.add_argument("-d", "--date", dest="trackDatetimes", action="append", help="extract track from datetime (ISO format yyyy-mm-dd [hh:mm:ss]). Can be specified multiple times to append.", default=[])
         parser.add_argument("-o", "--output", dest="outputFile", help="direct output to this destination [default: %(default)s]", default='extracted_track.gpx')
         parser.add_argument("-i", "--input", dest="inputFile", help="source gpx file containing one or more tracks [default: %(default)s]", default='Current.gpx')
@@ -88,7 +89,8 @@ USAGE
             raise(e)
 
         trackDatetimes = args.trackDatetimes
-        if len(trackDatetimes) == 0:
+        extractDates = args.extractDates
+        if len(trackDatetimes) == 0 and not extractDates:
             sys.stderr.write(program_name + ":\n")
             sys.stderr.write(indent + "no datetime specified with -d option")
             return 2
@@ -106,7 +108,7 @@ USAGE
                 parsedTrackDatetimes.append(checkedDatetime.strftime('%Y-%m-%d'))
         inputFile = args.inputFile
         outputFile = args.outputFile
-        extractDates = args.extractDates
+        combineAllTracksForDate = args.combineAllTracksForDate
         try:
             with open(inputFile) as f:
                 gpxSoup = bs(f,'xml')
@@ -152,14 +154,15 @@ USAGE
         for trackDatetime in parsedTrackDatetimes:
             trackNames = gpxSoup.find_all('name', string=re.compile(trackDatetime))
             if len(trackNames) > 0:
-                if len(trackNames) > 1:
+                if len(trackNames) > 1  and not combineAllTracksForDate:
                     sys.stderr.write(program_name + ":\n")
                     sys.stderr.write(indent + "More than one track found for that date in '" + inputFile+"'\n")
                     for name in trackNames:
                         print(name.get_text())
                     return 2
                 else:
-                    selectedTracks.append(str(trackNames[0].find_parent('trk')))
+                    for trackName in trackNames:
+                        selectedTracks.append(str(trackName.find_parent('trk')))
             else:
                 sys.stderr.write(program_name + ":\n")
                 sys.stderr.write(indent + "No matching track for datetime '" + trackDatetime + "' found in '" + inputFile+"'\n")
@@ -174,15 +177,13 @@ USAGE
  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
  xmlns="http://www.topografix.com/GPX/1/0"
  xsi:schemaLocation="http://www.topografix.com/GPX/1/0 http://www.topografix.com/GPX/1/0/gpx.xsd">
- <trk>
 '''
     gpxTail = '''
-</trk>
 </gpx>
     '''
     combinedTracks = ''
     for selectedTrack in selectedTracks:
-        combinedTracks = combinedTracks + selectedTrack.replace('<trk>', '').replace('</trk>','').strip() + '\n'
+        combinedTracks = combinedTracks + selectedTrack.strip() + '\n'
     outString = gpxHead + combinedTracks + gpxTail
     try:
         with open(outputFile, 'w') as f:
