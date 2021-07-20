@@ -159,7 +159,7 @@ USAGE
                         print(name.get_text())
                     return 2
                 else:
-                    selectedTracks.append(trackNames[0].find_parent('trk').prettify())
+                    selectedTracks.append(str(trackNames[0].find_parent('trk')))
             else:
                 sys.stderr.write(program_name + ":\n")
                 sys.stderr.write(indent + "No matching track for datetime '" + trackDatetime + "' found in '" + inputFile+"'\n")
@@ -168,22 +168,21 @@ USAGE
         sys.stderr.write(program_name + ":\n")
         sys.stderr.write(indent + repr(e)+"\n")
         return 2
-    gpxHead = '''
-<?xml version="1.0" encoding="utf-8"?>
+    gpxHead = '''<?xml version="1.0" encoding="utf-8"?>
 <gpx version="1.0"
  creator="extract_gpx.pl by Rob Groves"
  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
  xmlns="http://www.topografix.com/GPX/1/0"
  xsi:schemaLocation="http://www.topografix.com/GPX/1/0 http://www.topografix.com/GPX/1/0/gpx.xsd">
  <trk>
- '''
+'''
     gpxTail = '''
-    </trk>
-    </gpx>
+</trk>
+</gpx>
     '''
     combinedTracks = ''
     for selectedTrack in selectedTracks:
-        combinedTracks = combinedTracks + selectedTrack.replace('<trk>', '').replace('</trk>','')
+        combinedTracks = combinedTracks + selectedTrack.replace('<trk>', '').replace('</trk>','').strip() + '\n'
     outString = gpxHead + combinedTracks + gpxTail
     try:
         with open(outputFile, 'w') as f:
