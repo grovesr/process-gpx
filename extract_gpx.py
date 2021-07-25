@@ -72,16 +72,17 @@ def main(argv=None): # IGNORE:C0111
 
 USAGE
 ''' % (program_shortdesc, str(__date__))
-    today = datetime.today().strftime('%Y-%m-%d')
     indent = len(program_name) * " "
     try:
         # Setup argument parser
         parser = ArgumentParser(description=program_license, formatter_class=RawDescriptionHelpFormatter)
         parser.add_argument("-e", "--extract", dest="extractDates", action="store_true", help="extract all dates that have tracks associated with them in input file", default=False)
         parser.add_argument("-c", "--combine", dest="combineAllTracksForDate", action="store_true", help="combine all tracks that match the datetime specified into one output file", default=False)
-        parser.add_argument("-d", "--date", dest="trackDatetimes", action="append", help="extract track from datetime (ISO format yyyy-mm-dd [hh:mm:ss]). Can be specified multiple times to append.", default=[])
+        parser.add_argument("-m", "--merge", dest="mergeFiles", action="store_true", help="merge tracks from one or more input file into a single output file", default=False)
+        parser.add_argument("-p", "--pretty", dest="prettify", action="store_true", help="prettify the output file", default=False)
+        parser.add_argument("-d", "--date", dest="trackDatetimes", action="append", help="extract track from datetime (ISO format yyyy-mm-dd [hh:mm:ss]). Can be specified multiple times to append", default=[])
         parser.add_argument("-o", "--output", dest="outputFile", help="direct output to this destination [default: %(default)s]", default='extracted_track.gpx')
-        parser.add_argument("-i", "--input", dest="inputFile", help="source gpx file containing one or more tracks [default: %(default)s]", default='Current.gpx')
+        parser.add_argument("-i", "--input", dest="inputFiles", action="append", help="source gpx file containing one or more tracks. Can be specified multiple times to search or combine multiple files", default=[])
         # Process arguments
         try:
             args = parser.parse_args()
@@ -89,12 +90,21 @@ USAGE
             raise(e)
 
         trackDatetimes = args.trackDatetimes
+        inputFiles = args.inputFiles
         extractDates = args.extractDates
-        if len(trackDatetimes) == 0 and not extractDates:
+        outputFile = args.outputFile
+        combineAllTracksForDate = args.combineAllTracksForDate
+        mergeFiles = args.mergeFiles
+        prettify = args.prettify
+        if len(inputFiles) == 0:
+            sys.stderr.write(program_name + ":\n")
+            sys.stderr.write(indent + "no input file(s) specified with -i option")
+            return 2
+        if len(trackDatetimes) == 0 and not (extractDates or mergeFiles):
             sys.stderr.write(program_name + ":\n")
             sys.stderr.write(indent + "no datetime specified with -d option")
             return 2
-        parsedTrackDatetimes = []
+        parsedTrackDatetimes = {}
         for trackDatetime in trackDatetimes:
             try:
                 checkedDatetime = datetime.fromisoformat(trackDatetime)
@@ -103,12 +113,21 @@ USAGE
                 sys.stderr.write(indent + repr(e)+"\n")
                 return 2
             if len(trackDatetime.strip()) > 10:
-                parsedTrackDatetimes.append(checkedDatetime.strftime('%Y-%m-%d %H:%M'))
+                parsedTrackDatetimes[checkedDatetime.strftime('%Y-%m-%d %H:%M')] = checkedDatetime
             else:
-                parsedTrackDatetimes.append(checkedDatetime.strftime('%Y-%m-%d'))
-        inputFile = args.inputFile
-        outputFile = args.outputFile
-        combineAllTracksForDate = args.combineAllTracksForDate
+                parsedTrackDatetimes[checkedDatetime.strftime('%Y-%m-%d')] = checkedDatetime
+    except KeyboardInterrupt:
+        ### handle keyboard interrupt ###
+        return 0
+    except Exception as e:
+        if DEBUG or TESTRUN:
+            raise(e)
+        sys.stderr.write(program_name + ": " + repr(e) + "\n")
+        sys.stderr.write(indent + "for help use --help\n")
+        return 2
+    selectedTracks = []
+    tracksForDates= {}
+    for inputFile in inputFiles:
         try:
             with open(inputFile) as f:
                 gpxSoup = bs(f,'xml')
@@ -121,56 +140,78 @@ USAGE
             sys.stderr.write(program_name + ":\n")
             sys.stderr.write(indent + repr(e)+"\n")
             return 2
-    except KeyboardInterrupt:
-        ### handle keyboard interrupt ###
-        return 0
-    except Exception as e:
-        if DEBUG or TESTRUN:
-            raise(e)
-        sys.stderr.write(program_name + ": " + repr(e) + "\n")
-        sys.stderr.write(indent + "for help use --help\n")
-        return 2
-    if not gpxSoup.contents:
-        sys.stderr.write(program_name + ":\n")
-        sys.stderr.write(indent + "No matching track found in '" + inputFile+"'\n")
-        return 2
-    if extractDates:
-        try:
-            trackNames = gpxSoup('name', string=re.compile('Active Log'))
-            if trackNames is not None:
-                for name in trackNames:
-                    print(name.get_text())
-            else:
-                sys.stderr.write(program_name + ":\n")
-                sys.stderr.write(indent + "No Active Log tracks found in '" + inputFile+"'\n")
-                return 2 
-        except Exception as e:
-            sys.stderr.write(program_name + ":\n")
-            sys.stderr.write(indent + repr(e)+"\n")
-            return 2
-        return 0
-    try:
-        selectedTracks = []
-        for trackDatetime in parsedTrackDatetimes:
-            trackNames = gpxSoup.find_all('name', string=re.compile(trackDatetime))
-            if len(trackNames) > 0:
-                if len(trackNames) > 1  and not combineAllTracksForDate:
+        if gpxSoup.contents:
+            if extractDates:
+                try:
+                    trackNames = gpxSoup('name', string=re.compile('Active Log'))
+                    if trackNames is not None:
+                        for name in trackNames:
+                            print(name.get_text())
+                    else:
+                        sys.stderr.write(program_name + ":\n")
+                        sys.stderr.write(indent + "No Active Log tracks found in '" + inputFile+"'\n")
+                        return 2 
+                except Exception as e:
                     sys.stderr.write(program_name + ":\n")
-                    sys.stderr.write(indent + "More than one track found for that date in '" + inputFile+"'\n")
-                    for name in trackNames:
-                        print(name.get_text())
+                    sys.stderr.write(indent + repr(e)+"\n")
                     return 2
-                else:
-                    for trackName in trackNames:
-                        selectedTracks.append(str(trackName.find_parent('trk')))
+                return 0
+            if mergeFiles:
+                trackNames = gpxSoup('name', string=re.compile('Active Log'))
+                for trackName in trackNames:
+                    track = trackName.find_parent('trk')
+                    if prettify:
+                        trackString = track.prettify()
+                    else:
+                        trackString = str(track)
+                    selectedTracks.append(trackString)
             else:
-                sys.stderr.write(program_name + ":\n")
-                sys.stderr.write(indent + "No matching track for datetime '" + trackDatetime + "' found in '" + inputFile+"'\n")
-                return 2 
-    except Exception as e:
-        sys.stderr.write(program_name + ":\n")
-        sys.stderr.write(indent + repr(e)+"\n")
+                try:
+                    tracksFound = 0
+                    for trackDatetimeString, trackDatetimeObject in parsedTrackDatetimes.items():
+                        if not trackDatetimeString in tracksForDates:
+                            trackNames = gpxSoup.find_all('name', string=re.compile(trackDatetimeString))
+                            if len(trackNames) > 0:
+                                tracksForDates[trackDatetimeString] = {}
+                                tracksForDates[trackDatetimeString]['datetimeObj'] = trackDatetimeObject
+                                tracksForDates[trackDatetimeString]['foundTrack'] = False
+                                tracksForDates[trackDatetimeString]['trackNames'] = trackNames
+                                tracksForDates[trackDatetimeString]['foundTrack'] = True
+                                tracksFound = tracksFound + len(tracksForDates[trackDatetimeString]['trackNames'])
+                                combinedTracks = ''
+                                if combineAllTracksForDate:
+                                    combinedTracks = combinedTracks + '<trk><name>Active Log: Combined track from ' + trackDatetimeObject.strftime('%Y-%m-%d') + '</name>'
+                                for trackName in tracksForDates[trackDatetimeString]['trackNames']:
+                                    track = trackName.find_parent('trk')
+                                    if combineAllTracksForDate:
+                                        # remove the old name tag if combining
+                                        track.find('name').decompose()
+                                    if prettify:
+                                        trackString = track.prettify()
+                                    else:
+                                        trackString = str(track)
+                                    if combineAllTracksForDate:
+                                        trackString = trackString.replace('<trk>', '').replace('</trk>', '')
+                                    combinedTracks = combinedTracks + trackString
+                                if combineAllTracksForDate:
+                                    combinedTracks = combinedTracks + '</trk>'
+                                selectedTracks.append(combinedTracks)      
+                    if tracksFound > 0:
+                        if tracksFound > 1  and not combineAllTracksForDate:
+                            sys.stderr.write(program_name + ":\n")
+                            sys.stderr.write(indent + "More than one track found for '" + str(parsedTrackDatetimes.keys()) + "' in '" + inputFile+"'. To combine use -c option.\n")
+                            for names in [item['trackNames'] for key, item in tracksForDates.items()]:
+                                for name in names:
+                                    print(name.get_text())
+                            return 2
+                except Exception as e:
+                    sys.stderr.write(program_name + ":\n")
+                    sys.stderr.write(indent + repr(e)+"\n")
+                    return 2
+    if len(selectedTracks) == 0:
+        sys.stderr.write(indent + "No matching tracks found for '" + str(parsedTrackDatetimes.keys()) + "' in file(s) '" + str(inputFiles) + "'\n")
         return 2
+        
     gpxHead = '''<?xml version="1.0" encoding="utf-8"?>
 <gpx version="1.0"
  creator="extract_gpx.pl by Rob Groves"
