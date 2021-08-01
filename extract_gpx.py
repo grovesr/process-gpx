@@ -65,21 +65,25 @@ class GeoLocation:
     MAX_LAT = math.radians(90)
     MIN_LON = math.radians(-180)
     MAX_LON = math.radians(180)
+    MAX_COURSE = 2 * math.pi
+    MIN_COURSE = 0
     
     EARTH_RADIUS = 6378.1  # kilometers
     
     
     @classmethod
-    def from_degrees(cls, deg_lat, deg_lon):
+    def from_degrees(cls, deg_lat, deg_lon, deg_course = MIN_COURSE):
         rad_lat = math.radians(deg_lat)
         rad_lon = math.radians(deg_lon)
-        return GeoLocation(rad_lat, rad_lon, deg_lat, deg_lon)
+        rad_course = math.radians(deg_course)
+        return GeoLocation(rad_lat, rad_lon, deg_lat, deg_lon, rad_course, deg_course)
         
     @classmethod
-    def from_radians(cls, rad_lat, rad_lon):
+    def from_radians(cls, rad_lat, rad_lon, rad_course = MIN_COURSE):
         deg_lat = math.degrees(rad_lat)
         deg_lon = math.degrees(rad_lon)
-        return GeoLocation(rad_lat, rad_lon, deg_lat, deg_lon)
+        deg_course = math.degrees(rad_course)
+        return GeoLocation(rad_lat, rad_lon, deg_lat, deg_lon, rad_course, deg_course)
     
     
     def __init__(
@@ -87,25 +91,41 @@ class GeoLocation:
             rad_lat,
             rad_lon,
             deg_lat,
-            deg_lon
+            deg_lon,
+            rad_course,
+            deg_course
     ):
         self.rad_lat = float(rad_lat)
         self.rad_lon = float(rad_lon)
         self.deg_lat = float(deg_lat)
         self.deg_lon = float(deg_lon)
+        self.rad_course = float(rad_course)
+        self.deg_course = int(deg_course)
         self._check_bounds()
         
     def __str__(self):
         degree_sign= u'\N{DEGREE SIGN}'
-        return ("({0:.4f}deg, {1:.4f}deg) = ({2:.6f}rad, {3:.6f}rad)").format(
-            self.deg_lat, self.deg_lon, self.rad_lat, self.rad_lon)
+        return ("({0:.4f}deg, {1:.4f}deg) = ({2:.6f}rad, {3:.6f}rad), course={4:3d}deg").format(
+            self.deg_lat, self.deg_lon, self.rad_lat, self.rad_lon, int(self.deg_course))
         
     def _check_bounds(self):
         if (self.rad_lat < GeoLocation.MIN_LAT 
                 or self.rad_lat > GeoLocation.MAX_LAT 
                 or self.rad_lon < GeoLocation.MIN_LON 
-                or self.rad_lon > GeoLocation.MAX_LON):
+                or self.rad_lon > GeoLocation.MAX_LON
+                or self.rad_course < GeoLocation.MIN_COURSE
+                or self.rad_course > GeoLocation.MAX_COURSE):
             raise Exception("Illegal arguments")
+        
+    def set_deg_course(self, course_in_degrees):
+        self.deg_course = int(course_in_degrees)
+        self.rad_course = math.radians(self.deg_course)
+        self._check_bounds()
+        
+    def set_rad_course(self, course_in_radians):
+        self.rad_course = course_in_radians
+        self.deg_course = int(math.degrees(self.rad_course))
+        self._check_bounds()
             
     def distance_to(self, other, radius=EARTH_RADIUS):
         '''
@@ -200,6 +220,7 @@ USAGE
         parser.add_argument("-m", "--merge", dest="mergeFiles", action="store_true", help="merge tracks from one or more input file into a single output file", default=False)
         parser.add_argument("-p", "--pretty", dest="prettify", action="store_true", help="prettify the output file", default=False)
         parser.add_argument("-t", "--thinDistance", dest="thinDistance", help="thin out track points to reduce file size by removing all points within this distance in kilometers from each other [default: %(default)s]", default=0)
+        parser.add_argument("-r", "--thinOrientation", dest="thinOrientation", help="thin out track points to reduce file size by removing all points with an orientation aspect within this number of degrees of each other [default: %(default)s]", default=0)
         parser.add_argument("-d", "--date", dest="trackDatetimes", action="append", help="extract track from datetime (ISO format yyyy-mm-dd [hh:mm:ss]). Can be specified multiple times to append", default=[])
         parser.add_argument("-o", "--output", dest="outputFile", help="direct output to this destination [default: %(default)s]", default='extracted_track.gpx')
         parser.add_argument("-i", "--input", dest="inputFiles", action="append", help="source gpx file containing one or more tracks. Can be specified multiple times to search or combine multiple files", default=[])
@@ -216,7 +237,20 @@ USAGE
         combineAllTracksForDate = args.combineAllTracksForDate
         mergeFiles = args.mergeFiles
         thinDistance = float(args.thinDistance)
+        thinOrientation = int(args.thinOrientation)
         prettify = args.prettify
+        if thinOrientation < 0:
+            sys.stderr.write(program_name + ":\n")
+            sys.stderr.write(indent + "thinOrientatio must be >= 0")
+            return 2
+        if thinDistance < 0:
+            sys.stderr.write(program_name + ":\n")
+            sys.stderr.write(indent + "thinDistance must be >= 0")
+            return 2
+        if thinDistance > 0 and thinOrientation > 0:
+            sys.stderr.write(program_name + ":\n")
+            sys.stderr.write(indent + "You can't specify thinOrientation and thinDistance at the same time. Choose one or the other.")
+            return 2
         if len(inputFiles) == 0:
             sys.stderr.write(program_name + ":\n")
             sys.stderr.write(indent + "no input file(s) specified with -i option")
@@ -289,6 +323,7 @@ USAGE
             else:
                 try:
                     tracksFound = 0
+                    courseFound = True
                     for trackDatetimeString, trackDatetimeObject in parsedTrackDatetimes.items():
                         if not trackDatetimeString in tracksForDates:
                             trackNames = gpxSoup.find_all('name', string=re.compile(trackDatetimeString))
@@ -304,24 +339,43 @@ USAGE
                                     combinedTracks = combinedTracks + '<trk><name>Active Log: Combined track from ' + trackDatetimeObject.strftime('%Y-%m-%d') + '</name>'
                                 for trackName in tracksForDates[trackDatetimeString]['trackNames']:
                                     track = trackName.find_parent('trk')
-                                    if thinDistance > 0:
+                                    if thinDistance > 0 or thinOrientation > 0:
                                         trackSegs = track.find_all('trkseg')
                                         for trackSeg in trackSegs:
                                             trackPoint = trackSeg.find('trkpt')
                                             if trackPoint is not None and trackPoint['lat'] is not None and trackPoint['lon'] is not None:
-                                                geoLocation = GeoLocation.from_degrees(float(trackPoint['lat']), float(trackPoint['lon']))
+                                                if trackPoint.find('course') is not None:
+                                                    course = int(float(trackPoint.find('course').string))
+                                                else:
+                                                    course = math.degrees(GeoLocation.MIN_COURSE)
+                                                    courseFound = False
+                                                geoLocation = GeoLocation.from_degrees(float(trackPoint['lat']), float(trackPoint['lon']), course)
                                                 nextTrackPoint = trackPoint.find_next_sibling('trkpt')
                                                 if nextTrackPoint is not None and nextTrackPoint['lat'] is not None and nextTrackPoint['lon'] is not None:
-                                                    nextGeoLocation = GeoLocation.from_degrees(float(nextTrackPoint['lat']), float(nextTrackPoint['lon']))
                                                     foundLastTrackPoint = False
                                                     while not foundLastTrackPoint:  
-                                                        nextGeoLocation = GeoLocation.from_degrees(float(nextTrackPoint['lat']), float(nextTrackPoint['lon']))
+                                                        if nextTrackPoint.find('course') is not None:
+                                                            course = int(float(nextTrackPoint.find('course').string))
+                                                        else:
+                                                            course = math.degrees(GeoLocation.MIN_COURSE)
+                                                            courseFound = False
+                                                        nextGeoLocation = GeoLocation.from_degrees(float(nextTrackPoint['lat']), float(nextTrackPoint['lon']), course)
                                                         tempTrackPoint = nextTrackPoint.find_next_sibling('trkpt')
                                                         foundLastTrackPoint = tempTrackPoint is None
-                                                        if geoLocation.distance_to(nextGeoLocation) > thinDistance or foundLastTrackPoint:
-                                                            geoLocation = nextGeoLocation
-                                                        else:
-                                                            nextTrackPoint.decompose()
+                                                        if thinDistance:
+                                                            if geoLocation.distance_to(nextGeoLocation) > thinDistance or foundLastTrackPoint:
+                                                                geoLocation = nextGeoLocation
+                                                            else:
+                                                                nextTrackPoint.decompose()
+                                                        if thinOrientation:
+                                                            if not courseFound:
+                                                                sys.stderr.write(program_name + ":\n")
+                                                                sys.stderr.write(indent + "Some course information missing in '" + inputFile+"' unable to thinOrientation\n")
+                                                                return 2 
+                                                            if abs(nextGeoLocation.deg_course - geoLocation.deg_course) > thinOrientation or foundLastTrackPoint:
+                                                                geoLocation = nextGeoLocation
+                                                            else:
+                                                                nextTrackPoint.decompose()
                                                         nextTrackPoint = tempTrackPoint
                                     if combineAllTracksForDate:
                                         # remove the old name tag if combining
