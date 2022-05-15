@@ -324,6 +324,7 @@ USAGE
                 try:
                     tracksFound = 0
                     courseFound = True
+                    combinedDates = ''
                     for trackDatetimeString, trackDatetimeObject in parsedTrackDatetimes.items():
                         if not trackDatetimeString in tracksForDates:
                             trackNames = gpxSoup.find_all('name', string=re.compile(trackDatetimeString))
@@ -335,8 +336,6 @@ USAGE
                                 tracksForDates[trackDatetimeString]['foundTrack'] = True
                                 tracksFound = tracksFound + len(tracksForDates[trackDatetimeString]['trackNames'])
                                 combinedTracks = ''
-                                if combineAllTracksForDate:
-                                    combinedTracks = combinedTracks + '<trk><name>Active Log: Combined track from ' + trackDatetimeObject.strftime('%Y-%m-%d') + '</name>'
                                 for trackName in tracksForDates[trackDatetimeString]['trackNames']:
                                     track = trackName.find_parent('trk')
                                     if thinDistance > 0 or thinOrientation > 0:
@@ -385,10 +384,11 @@ USAGE
                                     else:
                                         trackString = str(track)
                                     if combineAllTracksForDate:
+                                        trackDate = trackDatetimeObject.strftime('%Y-%m-%d %H:%M')
+                                        if trackDate not in combinedDates:
+                                            combinedDates = combinedDates + trackDatetimeObject.strftime('%Y-%m-%d %H:%M') + ', '
                                         trackString = trackString.replace('<trk>', '').replace('</trk>', '')
                                     combinedTracks = combinedTracks + trackString
-                                if combineAllTracksForDate:
-                                    combinedTracks = combinedTracks + '</trk>'
                                 selectedTracks.append(combinedTracks)      
                     if tracksFound > 0:
                         if tracksFound > 1  and not combineAllTracksForDate:
@@ -417,8 +417,12 @@ USAGE
 </gpx>
     '''
     combinedTracks = ''
+    if combineAllTracksForDate:
+        combinedTracks = combinedTracks + '<trk><name>Active Log: Combined track from ' + combinedDates.rstrip(', ') + '</name>'
     for selectedTrack in selectedTracks:
         combinedTracks = combinedTracks + selectedTrack.strip() + '\n'
+    if combineAllTracksForDate:
+        combinedTracks = combinedTracks + '</trk>'
     outString = gpxHead + combinedTracks + gpxTail
     try:
         with open(outputFile, 'w') as f:
