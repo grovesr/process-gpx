@@ -219,6 +219,8 @@ USAGE
         parser.add_argument("-c", "--combine", dest="combineAllTracksForDate", action="store_true", help="combine all tracks that match the datetime specified into one output file", default=False)
         parser.add_argument("-m", "--merge", dest="mergeFiles", action="store_true", help="merge tracks from one or more input file into a single output file", default=False)
         parser.add_argument("-p", "--pretty", dest="prettify", action="store_true", help="prettify the output file", default=False)
+        parser.add_argument("-k", "--kml", dest="genKml", action="store_true", help="generate a KML formatted file in addition to the gpx file", default=False)
+        parser.add_argument("-n", "--nopoints", dest="noKmlPoints", action="store_true", help="in generated KML file remove point Placemarks", default=False)
         parser.add_argument("-t", "--thinDistance", dest="thinDistance", help="thin out track points to reduce file size by removing all points within this distance in kilometers from each other [default: %(default)s]", default=0)
         parser.add_argument("-r", "--thinOrientation", dest="thinOrientation", help="thin out track points to reduce file size by removing all points with an orientation aspect within this number of degrees of each other [default: %(default)s]", default=0)
         parser.add_argument("-d", "--date", dest="trackDatetimes", action="append", help="extract track from datetime (ISO format yyyy-mm-dd [hh:mm:ss]). Can be specified multiple times to append", default=[])
@@ -239,25 +241,31 @@ USAGE
         thinDistance = float(args.thinDistance)
         thinOrientation = int(args.thinOrientation)
         prettify = args.prettify
+        genKml = args.genKml
+        noKmlPoints = args.noKmlPoints
         if thinOrientation < 0:
             sys.stderr.write(program_name + ":\n")
-            sys.stderr.write(indent + "thinOrientatio must be >= 0")
+            sys.stderr.write(indent + "thinOrientatio must be >= 0\n")
             return 2
         if thinDistance < 0:
             sys.stderr.write(program_name + ":\n")
-            sys.stderr.write(indent + "thinDistance must be >= 0")
+            sys.stderr.write(indent + "thinDistance must be >= 0\n")
             return 2
         if thinDistance > 0 and thinOrientation > 0:
             sys.stderr.write(program_name + ":\n")
-            sys.stderr.write(indent + "You can't specify thinOrientation and thinDistance at the same time. Choose one or the other.")
+            sys.stderr.write(indent + "You can't specify thinOrientation and thinDistance at the same time. Choose one or the other.\n")
             return 2
         if len(inputFiles) == 0:
             sys.stderr.write(program_name + ":\n")
-            sys.stderr.write(indent + "no input file(s) specified with -i option")
+            sys.stderr.write(indent + "no input file(s) specified with -i option\n")
             return 2
         if len(trackDatetimes) == 0 and not (extractDates or mergeFiles):
             sys.stderr.write(program_name + ":\n")
-            sys.stderr.write(indent + "no datetime specified with -d option")
+            sys.stderr.write(indent + "no datetime specified with -d option\n")
+            return 2
+        if noKmlPoints  and not genKml:
+            sys.stderr.write(program_name + ":\n")
+            sys.stderr.write(indent + "you asked to not generate KML Placemark points (-n) but did not ask to generate a KML file (-k)\n")
             return 2
         parsedTrackDatetimes = {}
         for trackDatetime in trackDatetimes:
@@ -416,9 +424,42 @@ USAGE
     gpxTail = '''
 </gpx>
     '''
+    kmlHead = '''<?xml version="1.0" encoding="UTF-8"?> 
+<kml 
+  xmlns="http://www.opengis.net/kml/2.2" 
+  xmlns:kml="http://www.opengis.net/kml/2.2">
+  <Document>
+    <visibility>1</visibility>
+    <Style id="blue">
+      <LineStyle>
+        <color>C8FF7800</color>
+        <width>4</width>
+      </LineStyle>
+    </Style>
+    <Style id="red">
+      <LineStyle>
+        <color>C81400FF</color>
+        <width>4</width>
+      </LineStyle>
+    </Style>
+    <Style id="paddle-red-circle">
+      <IconStyle>
+        <color>C8FF7800</color>
+        <Icon>
+          <href>http://maps.google.com/mapfiles/kml/paddle/red-circle.png</href>
+        </Icon>
+      </IconStyle>
+    </Style>
+    <Folder>  
+'''
+    kmlTail = '''
+    </Folder>
+  </Document>
+</kml>
+'''
     combinedTracks = ''
     if combineAllTracksForDate:
-        combinedTracks = combinedTracks + '<trk><name>Active Log: Combined track from ' + combinedDates.rstrip(', ') + '</name>'
+        combinedTracks = combinedTracks + '<trk><name>Active Log: Combined track from %s</name>' % combinedDates.rstrip(', ')
     for selectedTrack in selectedTracks:
         combinedTracks = combinedTracks + selectedTrack.strip() + '\n'
     if combineAllTracksForDate:
@@ -432,12 +473,50 @@ USAGE
         sys.stderr.write(indent + "Unable to open output file '" + outputFile+"'\n")
         sys.stderr.write(indent + " " + repr(e)+"\n")
         return 2
+    if genKml:
+        combinedKml = ''
+        for selectedTrack in selectedTracks:
+            # make a new beautiful soup object to extract the tracksegs and trkpts for this track
+            kmlSoup = bs(selectedTrack,'xml')
+            if combineAllTracksForDate:
+                trackName = '<name>Active Log: Combined track from ' + combinedDates.rstrip(', ') + '</name>'
+            else:
+                trackName = str(kmlSoup.find('name'))
+            trackPlacemark = '''<Placemark>
+  <styleUrl>#blue</styleUrl>
+  <name>''' + 'example' + '''</name>
+  <LineString>
+    <coordinates>
+            '''
+            combinedKml = combinedKml + trackPlacemark
+            trackSegs = kmlSoup.find_all('trkseg')
+            for trackSeg in trackSegs:
+                trackPoints = trackSeg.find_all('trkpt')
+                for trackPoint in trackPoints:
+                    combinedKml = combinedKml + trackPoint['lon'] + ',' + trackPoint['lat'] + ',' + trackPoint.find('ele').string + ' '
+            combinedKml = combinedKml.rstrip(' ') + '</coordinates></LineString></Placemark>' 
+            combinedKml = combinedKml + '<Placemark><styleUrl>#paddle-red-circle</styleUrl>' + trackName + '<Point><coordinates>'  + trackPoint['lon'] + ',' + trackPoint['lat'] + ',' + trackPoint.find('ele').string + '</coordinates></Point></Placemark>'
+        if len(selectedTracks) > 1:
+            #make the final track red
+            combinedKml = (combinedKml[::-1].replace('eulb#','der#', 1))[::-1]
+        kmlOutString = kmlHead + combinedKml + kmlTail
+        kmlOutputFile = outputFile.replace('.gpx', '.kml')
+        try:
+            with open(kmlOutputFile, 'w') as f:
+                    f.write(kmlOutString)
+        except OSError as e:
+            sys.stderr.write(program_name + ":\n")
+            sys.stderr.write(indent + "Unable to open output file '" + kmlOutputFile+"'\n")
+            sys.stderr.write(indent + " " + repr(e)+"\n")
+            return 2
     if DEBUG:
         print("trackDatetime: " + str(parsedTrackDatetimes))
         print("inputFile: " + inputFile)
         print("outputFile: " + outputFile)
         print("Length of output file string: " + str(len(outString)))
-    print("outputFile: " + outputFile)
+        if genKml:
+            print("kmlOutputFile: " + kmlOutputFile)
+            print("Length of KML output file string: " + str(len(kmlOutString)))
     return 0
 
 if __name__ == "__main__":
