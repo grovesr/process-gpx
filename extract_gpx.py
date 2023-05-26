@@ -21,6 +21,7 @@ import sys
 import os
 import re
 import math
+import requests
 
 
 from argparse import ArgumentParser
@@ -36,6 +37,11 @@ __updated__ = '2021-07-13'
 DEBUG = 1
 TESTRUN = 0
 PROFILE = 0
+
+months = ['', 'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']
+monthsShort = ['', 'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+weekdays = ['monday','tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+weekdaysShort = ['mon','tues', 'wed', 'thu', 'fri', 'sat', 'sun']
 
 class CLIError(Exception):
     '''Generic exception to raise and log different fatal errors.'''
@@ -132,12 +138,10 @@ class GeoLocation:
         Computes the great circle distance between this GeoLocation instance
         and the other.
         '''
-        return radius * math.acos(
-                math.sin(self.rad_lat) * math.sin(other.rad_lat) +
-                math.cos(self.rad_lat) * 
-                math.cos(other.rad_lat) * 
-                math.cos(self.rad_lon - other.rad_lon)
-            )
+        arg = math.sin(self.rad_lat) * math.sin(other.rad_lat) + math.cos(self.rad_lat) * math.cos(other.rad_lat) * math.cos(self.rad_lon - other.rad_lon)
+        if arg < -1 or arg > 1:
+            arg = round(arg)
+        return radius * math.acos(arg)
             
     def bounding_locations(self, distance, radius=EARTH_RADIUS):
         '''
@@ -221,6 +225,7 @@ USAGE
         parser.add_argument("-p", "--pretty", dest="prettify", action="store_true", help="prettify the output file", default=False)
         parser.add_argument("-k", "--kml", dest="genKml", action="store_true", help="generate a KML formatted file in addition to the gpx file", default=False)
         parser.add_argument("-n", "--nopoints", dest="noKmlPoints", action="store_true", help="in generated KML file remove point Placemarks", default=False)
+        parser.add_argument("-b", "--addBlogUrl", dest="addBlogUrl", action="store_true", help="In generated KML file add blog post URLs to the Placemarks", default=False)
         parser.add_argument("-t", "--thinDistance", dest="thinDistance", help="thin out track points to reduce file size by removing all points within this distance in kilometers from each other [default: %(default)s]", default=0)
         parser.add_argument("-r", "--thinOrientation", dest="thinOrientation", help="thin out track points to reduce file size by removing all points with an orientation aspect within this number of degrees of each other [default: %(default)s]", default=0)
         parser.add_argument("-d", "--date", dest="trackDatetimes", action="append", help="extract track from datetime (ISO format yyyy-mm-dd [hh:mm:ss]). Can be specified multiple times to append", default=[])
@@ -242,6 +247,7 @@ USAGE
         thinOrientation = int(args.thinOrientation)
         prettify = args.prettify
         genKml = args.genKml
+        addBlogUrl = args.addBlogUrl
         noKmlPoints = args.noKmlPoints
         if thinOrientation < 0:
             sys.stderr.write(program_name + ":\n")
@@ -266,6 +272,14 @@ USAGE
         if noKmlPoints  and not genKml:
             sys.stderr.write(program_name + ":\n")
             sys.stderr.write(indent + "you asked to not generate KML Placemark points (-n) but did not ask to generate a KML file (-k)\n")
+            return 2
+        if addBlogUrl  and not genKml:
+            sys.stderr.write(program_name + ":\n")
+            sys.stderr.write(indent + "you asked to add blog URLs to Placemarks (-b) but did not ask to generate a KML file (-k)\n")
+            return 2
+        if mergeFiles  and (thinOrientation or thinDistance):
+            sys.stderr.write(program_name + ":\n")
+            sys.stderr.write(indent + "you can't merge files (-m) and thin them as well\n")
             return 2
         parsedTrackDatetimes = {}
         for trackDatetime in trackDatetimes:
@@ -344,11 +358,15 @@ USAGE
                                 tracksForDates[trackDatetimeString]['foundTrack'] = True
                                 tracksFound = tracksFound + len(tracksForDates[trackDatetimeString]['trackNames'])
                                 combinedTracks = ''
+                                trackDistance = 0
                                 for trackName in tracksForDates[trackDatetimeString]['trackNames']:
+                                    if not combineAllTracksForDate:
+                                        trackDistance = 0
                                     track = trackName.find_parent('trk')
-                                    if thinDistance > 0 or thinOrientation > 0:
+                                    if thinDistance > 0 or thinOrientation > 0 or True:
                                         trackSegs = track.find_all('trkseg')
                                         for trackSeg in trackSegs:
+                                            segDistance = 0
                                             trackPoint = trackSeg.find('trkpt')
                                             if trackPoint is not None and trackPoint['lat'] is not None and trackPoint['lon'] is not None:
                                                 if trackPoint.find('course') is not None:
@@ -369,8 +387,12 @@ USAGE
                                                         nextGeoLocation = GeoLocation.from_degrees(float(nextTrackPoint['lat']), float(nextTrackPoint['lon']), course)
                                                         tempTrackPoint = nextTrackPoint.find_next_sibling('trkpt')
                                                         foundLastTrackPoint = tempTrackPoint is None
+                                                        if not thinDistance and not thinOrientation:
+                                                            segDistance = segDistance + geoLocation.distance_to(nextGeoLocation)
+                                                            geoLocation = nextGeoLocation
                                                         if thinDistance:
                                                             if geoLocation.distance_to(nextGeoLocation) > thinDistance or foundLastTrackPoint:
+                                                                segDistance = segDistance + geoLocation.distance_to(nextGeoLocation)
                                                                 geoLocation = nextGeoLocation
                                                             else:
                                                                 nextTrackPoint.decompose()
@@ -380,10 +402,16 @@ USAGE
                                                                 sys.stderr.write(indent + "Some course information missing in '" + inputFile+"' unable to thinOrientation\n")
                                                                 return 2 
                                                             if abs(nextGeoLocation.deg_course - geoLocation.deg_course) > thinOrientation or foundLastTrackPoint:
+                                                                segDistance = segDistance + geoLocation.distance_to(nextGeoLocation)
                                                                 geoLocation = nextGeoLocation
                                                             else:
                                                                 nextTrackPoint.decompose()
                                                         nextTrackPoint = tempTrackPoint
+                                            trackDistance = trackDistance + segDistance
+                                    comment = gpxSoup.new_tag('cmt')
+                                    if trackDistance > 0:
+                                        comment.string = 'Miles driven: %s' % round(trackDistance*0.62)
+                                    track.insert(1, comment)
                                     if combineAllTracksForDate:
                                         # remove the old name tag if combining
                                         track.find('name').decompose()
@@ -419,6 +447,9 @@ USAGE
  creator="extract_gpx.pl by Rob Groves"
  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
  xmlns="http://www.topografix.com/GPX/1/0"
+ xmlns:gpxx="http://www.garmin.com/xmlschemas/GpxExtensions/v3" 
+ xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v2" 
+ xmlns:trp="http://www.garmin.com/xmlschemas/TripExtensions/v1"
  xsi:schemaLocation="http://www.topografix.com/GPX/1/0 http://www.topografix.com/GPX/1/0/gpx.xsd">
 '''
     gpxTail = '''
@@ -433,13 +464,13 @@ USAGE
     <Style id="blue">
       <LineStyle>
         <color>C8FF7800</color>
-        <width>4</width>
+        <width>3</width>
       </LineStyle>
     </Style>
     <Style id="red">
       <LineStyle>
         <color>C81400FF</color>
-        <width>4</width>
+        <width>3</width>
       </LineStyle>
     </Style>
     <Style id="paddle-red-circle">
@@ -474,40 +505,83 @@ USAGE
         sys.stderr.write(indent + " " + repr(e)+"\n")
         return 2
     if genKml:
-        combinedKml = ''
-        for selectedTrack in selectedTracks:
-            # make a new beautiful soup object to extract the tracksegs and trkpts for this track
-            kmlSoup = bs(selectedTrack,'xml')
-            if combineAllTracksForDate:
-                trackName = '<name>Active Log: Combined track from ' + combinedDates.rstrip(', ') + '</name>'
-            else:
-                trackName = str(kmlSoup.find('name'))
-            trackPlacemark = '''<Placemark>
-  <styleUrl>#blue</styleUrl>
-  <name>''' + 'example' + '''</name>
-  <LineString>
-    <coordinates>
-            '''
-            combinedKml = combinedKml + trackPlacemark
-            trackSegs = kmlSoup.find_all('trkseg')
-            for trackSeg in trackSegs:
-                trackPoints = trackSeg.find_all('trkpt')
-                for trackPoint in trackPoints:
-                    combinedKml = combinedKml + trackPoint['lon'] + ',' + trackPoint['lat'] + ',' + trackPoint.find('ele').string + ' '
-            combinedKml = combinedKml.rstrip(' ') + '</coordinates></LineString></Placemark>' 
-            combinedKml = combinedKml + '<Placemark><styleUrl>#paddle-red-circle</styleUrl>' + trackName + '<Point><coordinates>'  + trackPoint['lon'] + ',' + trackPoint['lat'] + ',' + trackPoint.find('ele').string + '</coordinates></Point></Placemark>'
-        if len(selectedTracks) > 1:
-            #make the final track red
-            combinedKml = (combinedKml[::-1].replace('eulb#','der#', 1))[::-1]
-        kmlOutString = kmlHead + combinedKml + kmlTail
-        kmlOutputFile = outputFile.replace('.gpx', '.kml')
-        try:
-            with open(kmlOutputFile, 'w') as f:
-                    f.write(kmlOutString)
-        except OSError as e:
+        # make a new beautiful soup object to extract the tracks from the gpx output string
+        kmlSoup = bs(outString, 'xml')
+        if kmlSoup.contents:
+            trackNames = kmlSoup.find_all('name', string=re.compile('Active Log'))
+            selectedTracks = []
+            for trackName in trackNames:
+                selectedTracks.append(trackName.find_parent('trk'))
+            combinedKml = ''
+            for selectedTrack in selectedTracks:
+                if combineAllTracksForDate:
+                    timedate = datetime.fromisoformat(combinedDates.rstrip(', '))
+                else:
+                    date = re.findall('\d\d\d\d?-?\d?\d?-?\d?\d? ?\d?\d?:?\d?\d', selectedTrack.find('name').string)
+                    timedate = datetime.fromisoformat(date[0])
+                month = months[timedate.month]
+                weekday = weekdays[timedate.weekday()]
+                trackName = 'Our travels on %s %s %d, %d' % (weekday, month, timedate.day, timedate.year)
+                comment = selectedTrack.find('cmt')
+                if comment:
+                    cmt = comment.string
+                else:
+                    cmt = ''
+                blogUrl = ''
+                if addBlogUrl:
+                    blogUrl = 'https://36yrdream.com/'
+                    weekday = weekdays[timedate.weekday()]
+                    weekdayShort = weekdaysShort[timedate.weekday()]
+                    month = months[timedate.month]
+                    monthShort = monthsShort[timedate.month]
+                    date = timedate.day
+                    year = timedate.year
+                    urlsToTry = [
+                        '%s%s-%s-%s-%s' %(blogUrl, weekday, month, date, year),
+                        '%s%s-%s-%s-%s' %(blogUrl, weekdayShort, month, date, year),
+                        '%s%s-%s-%s-%s' %(blogUrl, weekday, monthShort, date, year),
+                        '%s%s-%s-%s-%s' %(blogUrl, weekdayShort, monthShort, date, year),
+                        '%s%s-%s-%s' %(blogUrl, weekday, month, date),
+                        '%s%s-%s-%s' %(blogUrl, weekdayShort, month, date),
+                        '%s%s-%s-%s' %(blogUrl, weekday, monthShort, date),
+                        '%s%s-%s-%s' %(blogUrl, weekdayShort, monthShort, date)
+                        ]
+                    found = False
+                    for url in urlsToTry:
+                        response = requests.head(url, allow_redirects = True)
+                        if response.status_code == 200:
+                            blogUrl = url
+                            found = True
+                            break
+                    if not found:
+                        blogUrl = 'unable to find blog URL'
+                description = '<![CDATA[<b>%s</b><br />%s]]>' % (cmt, blogUrl)
+                trackPlacemark = '<Placemark><styleUrl>#blue</styleUrl><name>%s</name><description>%s</description><LineString><coordinates>' % (trackName, description)
+                combinedKml = combinedKml + trackPlacemark
+                trackSegs = selectedTrack.find_all('trkseg')
+                for trackSeg in trackSegs:
+                    trackPoints = trackSeg.find_all('trkpt')
+                    for trackPoint in trackPoints:
+                        combinedKml = combinedKml + trackPoint['lon'] + ',' + trackPoint['lat'] + ',' + trackPoint.find('ele').string + ' '
+                combinedKml = combinedKml.rstrip(' ') + '</coordinates></LineString></Placemark>'
+                if not noKmlPoints: 
+                    combinedKml = combinedKml + '<Placemark><styleUrl>#paddle-red-circle</styleUrl><name>%s</name><description>%s</description><Point><coordinates>%s,%s,%s</coordinates></Point></Placemark>' % (trackName, description, trackPoint['lon'], trackPoint['lat'], trackPoint.find('ele').string)
+            if len(selectedTracks) > 1:
+                #make the final track red
+                combinedKml = (combinedKml[::-1].replace('eulb#','der#', 1))[::-1]
+            kmlOutString = kmlHead + combinedKml + kmlTail
+            kmlOutputFile = outputFile.replace('.gpx', '.kml')
+            try:
+                with open(kmlOutputFile, 'w') as f:
+                        f.write(kmlOutString)
+            except OSError as e:
+                sys.stderr.write(program_name + ":\n")
+                sys.stderr.write(indent + "Unable to open output file '" + kmlOutputFile+"'\n")
+                sys.stderr.write(indent + " " + repr(e)+"\n")
+                return 2
+        else:
             sys.stderr.write(program_name + ":\n")
-            sys.stderr.write(indent + "Unable to open output file '" + kmlOutputFile+"'\n")
-            sys.stderr.write(indent + " " + repr(e)+"\n")
+            sys.stderr.write(indent + "Unable to parse the gpx output string to create the KML file\n")
             return 2
     if DEBUG:
         print("trackDatetime: " + str(parsedTrackDatetimes))
