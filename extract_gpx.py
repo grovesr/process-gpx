@@ -304,6 +304,8 @@ USAGE
         return 2
     selectedTracks = []
     tracksForDates= {}
+    totalDistance = 0
+    trackDistance = 0
     for inputFile in inputFiles:
         try:
             with open(inputFile) as f:
@@ -337,6 +339,11 @@ USAGE
                 trackNames = gpxSoup('name', string=re.compile('Active Log'))
                 for trackName in trackNames:
                     track = trackName.find_parent('trk')
+                    comment = track.find('cmt')
+                    if comment:
+                        miles = re.findall('\d+', comment.string)
+                        if miles:
+                            totalDistance = totalDistance + float(miles[0])
                     if prettify:
                         trackString = track.prettify()
                     else:
@@ -375,6 +382,8 @@ USAGE
                                                     course = math.degrees(GeoLocation.MIN_COURSE)
                                                     courseFound = False
                                                 geoLocation = GeoLocation.from_degrees(float(trackPoint['lat']), float(trackPoint['lon']), course)
+                                                prevTrackPoint = trackPoint
+                                                prevGeoLocation = GeoLocation.from_degrees(float(prevTrackPoint['lat']), float(prevTrackPoint['lon']), course)
                                                 nextTrackPoint = trackPoint.find_next_sibling('trkpt')
                                                 if nextTrackPoint is not None and nextTrackPoint['lat'] is not None and nextTrackPoint['lon'] is not None:
                                                     foundLastTrackPoint = False
@@ -386,13 +395,13 @@ USAGE
                                                             courseFound = False
                                                         nextGeoLocation = GeoLocation.from_degrees(float(nextTrackPoint['lat']), float(nextTrackPoint['lon']), course)
                                                         tempTrackPoint = nextTrackPoint.find_next_sibling('trkpt')
+                                                        segDistance = segDistance + prevGeoLocation.distance_to(nextGeoLocation)
+                                                        prevGeoLocation = nextGeoLocation
                                                         foundLastTrackPoint = tempTrackPoint is None
                                                         if not thinDistance and not thinOrientation:
-                                                            segDistance = segDistance + geoLocation.distance_to(nextGeoLocation)
                                                             geoLocation = nextGeoLocation
                                                         if thinDistance:
                                                             if geoLocation.distance_to(nextGeoLocation) > thinDistance or foundLastTrackPoint:
-                                                                segDistance = segDistance + geoLocation.distance_to(nextGeoLocation)
                                                                 geoLocation = nextGeoLocation
                                                             else:
                                                                 nextTrackPoint.decompose()
@@ -402,7 +411,6 @@ USAGE
                                                                 sys.stderr.write(indent + "Some course information missing in '" + inputFile+"' unable to thinOrientation\n")
                                                                 return 2 
                                                             if abs(nextGeoLocation.deg_course - geoLocation.deg_course) > thinOrientation or foundLastTrackPoint:
-                                                                segDistance = segDistance + geoLocation.distance_to(nextGeoLocation)
                                                                 geoLocation = nextGeoLocation
                                                             else:
                                                                 nextTrackPoint.decompose()
@@ -410,8 +418,9 @@ USAGE
                                             trackDistance = trackDistance + segDistance
                                     comment = gpxSoup.new_tag('cmt')
                                     if trackDistance > 0:
-                                        comment.string = 'Miles driven: %s' % round(trackDistance*0.62)
-                                    track.insert(1, comment)
+                                        comment.string = 'Miles travelled: %s' % round(trackDistance*0.62)
+                                    if not combineAllTracksForDate:
+                                        track.insert(1, comment)
                                     if combineAllTracksForDate:
                                         # remove the old name tag if combining
                                         track.find('name').decompose()
@@ -425,6 +434,8 @@ USAGE
                                             combinedDates = combinedDates + trackDatetimeObject.strftime('%Y-%m-%d %H:%M') + ', '
                                         trackString = trackString.replace('<trk>', '').replace('</trk>', '')
                                     combinedTracks = combinedTracks + trackString
+                                if combineAllTracksForDate:
+                                    combinedTracks = str(comment) + combinedTracks
                                 selectedTracks.append(combinedTracks)      
                     if tracksFound > 0:
                         if tracksFound > 1  and not combineAllTracksForDate:
@@ -438,6 +449,7 @@ USAGE
                     sys.stderr.write(program_name + ":\n")
                     sys.stderr.write(indent + repr(e)+"\n")
                     return 2
+        totalDistance = totalDistance + trackDistance * 0.62
     if len(selectedTracks) == 0:
         sys.stderr.write(indent + "No matching tracks found for '" + str(parsedTrackDatetimes.keys()) + "' in file(s) '" + str(inputFiles) + "'\n")
         return 2
@@ -569,7 +581,7 @@ USAGE
             if len(selectedTracks) > 1:
                 #make the final track red
                 combinedKml = (combinedKml[::-1].replace('eulb#','der#', 1))[::-1]
-            kmlOutString = kmlHead + combinedKml + kmlTail
+            kmlOutString = kmlHead + '<name>Total Miles Travelled: %s</name>' % round(totalDistance) + combinedKml + kmlTail
             kmlOutputFile = outputFile.replace('.gpx', '.kml')
             try:
                 with open(kmlOutputFile, 'w') as f:
