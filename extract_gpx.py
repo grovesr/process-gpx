@@ -560,7 +560,13 @@ USAGE
                         ]
                     found = False
                     for url in urlsToTry:
-                        response = requests.head(url, allow_redirects = True)
+                        try:
+                            response = requests.head(url, allow_redirects = True)
+                        except requests.exceptions.ConnectionError as e:
+                            sys.stderr.write(program_name + ":\n")
+                            sys.stderr.write(indent + 'Problem accesing network connection while checking blog URL [%s]\n' % url)
+                            sys.stderr.write(indent + "Either wait until you have a connection or leave off the -b flag\n")
+                            return 2
                         if response.status_code == 200:
                             blogUrl = url
                             found = True
