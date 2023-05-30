@@ -306,7 +306,12 @@ USAGE
     tracksForDates= {}
     totalDistance = 0
     trackDistance = 0
+    dates = []
+    if not extractDates:
+        sys.stdout.write('Generating GPX file...\n')
+        sys.stdout.flush()
     for inputFile in inputFiles:
+        fileIndex = inputFile.split('/')[-1].split('.')[0]
         try:
             with open(inputFile) as f:
                 gpxSoup = bs(f,'xml')
@@ -355,18 +360,18 @@ USAGE
                     courseFound = True
                     combinedDates = ''
                     for trackDatetimeString, trackDatetimeObject in parsedTrackDatetimes.items():
-                        if not trackDatetimeString in tracksForDates:
+                        if not trackDatetimeString + fileIndex in tracksForDates:
                             trackNames = gpxSoup.find_all('name', string=re.compile(trackDatetimeString))
                             if len(trackNames) > 0:
-                                tracksForDates[trackDatetimeString] = {}
-                                tracksForDates[trackDatetimeString]['datetimeObj'] = trackDatetimeObject
-                                tracksForDates[trackDatetimeString]['foundTrack'] = False
-                                tracksForDates[trackDatetimeString]['trackNames'] = trackNames
-                                tracksForDates[trackDatetimeString]['foundTrack'] = True
-                                tracksFound = tracksFound + len(tracksForDates[trackDatetimeString]['trackNames'])
+                                tracksForDates[trackDatetimeString + fileIndex] = {}
+                                tracksForDates[trackDatetimeString + fileIndex]['datetimeObj'] = trackDatetimeObject
+                                tracksForDates[trackDatetimeString + fileIndex]['foundTrack'] = False
+                                tracksForDates[trackDatetimeString + fileIndex]['trackNames'] = trackNames
+                                tracksForDates[trackDatetimeString + fileIndex]['foundTrack'] = True
+                                tracksFound = tracksFound + len(tracksForDates[trackDatetimeString + fileIndex]['trackNames'])
                                 combinedTracks = ''
                                 trackDistance = 0
-                                for trackName in tracksForDates[trackDatetimeString]['trackNames']:
+                                for trackName in tracksForDates[trackDatetimeString + fileIndex]['trackNames']:
                                     if not combineAllTracksForDate:
                                         trackDistance = 0
                                     track = trackName.find_parent('trk')
@@ -416,10 +421,9 @@ USAGE
                                                                 nextTrackPoint.decompose()
                                                         nextTrackPoint = tempTrackPoint
                                             trackDistance = trackDistance + segDistance
-                                    comment = gpxSoup.new_tag('cmt')
-                                    if trackDistance > 0:
+                                    if not combineAllTracksForDate and trackDistance > 0:
+                                        comment = gpxSoup.new_tag('cmt')
                                         comment.string = 'Miles travelled: %s' % round(trackDistance*0.62)
-                                    if not combineAllTracksForDate:
                                         track.insert(1, comment)
                                     if combineAllTracksForDate:
                                         # remove the old name tag if combining
@@ -434,8 +438,6 @@ USAGE
                                             combinedDates = combinedDates + trackDatetimeObject.strftime('%Y-%m-%d %H:%M') + ', '
                                         trackString = trackString.replace('<trk>', '').replace('</trk>', '')
                                     combinedTracks = combinedTracks + trackString
-                                if combineAllTracksForDate:
-                                    combinedTracks = str(comment) + combinedTracks
                                 selectedTracks.append(combinedTracks)      
                     if tracksFound > 0:
                         if tracksFound > 1  and not combineAllTracksForDate:
@@ -467,7 +469,26 @@ USAGE
     gpxTail = '''
 </gpx>
     '''
-    kmlHead = '''<?xml version="1.0" encoding="UTF-8"?> 
+    combinedTracks = ''
+    if combineAllTracksForDate:
+        combinedTracks = combinedTracks + '<trk><name>Active Log: Combined track from %s</name><cmt>Miles travelled: %s</cmt>' % (combinedDates.rstrip(', '), round(totalDistance))
+    for selectedTrack in selectedTracks:
+        combinedTracks = combinedTracks + selectedTrack.strip() + '\n'
+    if combineAllTracksForDate:
+        combinedTracks = combinedTracks + '</trk>'
+    outString = gpxHead + combinedTracks + gpxTail
+    try:
+        with open(outputFile, 'w') as f:
+                f.write(outString)
+    except OSError as e:
+        sys.stderr.write(program_name + ":\n")
+        sys.stderr.write(indent + "Unable to open output file '" + outputFile+"'\n")
+        sys.stderr.write(indent + " " + repr(e)+"\n")
+        return 2
+    if genKml:
+        sys.stdout.write('Generating KML file...\n')
+        sys.stdout.flush()
+        kmlHead = '''<?xml version="1.0" encoding="UTF-8"?> 
 <kml 
   xmlns="http://www.opengis.net/kml/2.2" 
   xmlns:kml="http://www.opengis.net/kml/2.2">
@@ -495,28 +516,11 @@ USAGE
     </Style>
     <Folder>  
 '''
-    kmlTail = '''
+        kmlTail = '''
     </Folder>
   </Document>
 </kml>
 '''
-    combinedTracks = ''
-    if combineAllTracksForDate:
-        combinedTracks = combinedTracks + '<trk><name>Active Log: Combined track from %s</name>' % combinedDates.rstrip(', ')
-    for selectedTrack in selectedTracks:
-        combinedTracks = combinedTracks + selectedTrack.strip() + '\n'
-    if combineAllTracksForDate:
-        combinedTracks = combinedTracks + '</trk>'
-    outString = gpxHead + combinedTracks + gpxTail
-    try:
-        with open(outputFile, 'w') as f:
-                f.write(outString)
-    except OSError as e:
-        sys.stderr.write(program_name + ":\n")
-        sys.stderr.write(indent + "Unable to open output file '" + outputFile+"'\n")
-        sys.stderr.write(indent + " " + repr(e)+"\n")
-        return 2
-    if genKml:
         # make a new beautiful soup object to extract the tracks from the gpx output string
         kmlSoup = bs(outString, 'xml')
         if kmlSoup.contents:
@@ -525,15 +529,16 @@ USAGE
             for trackName in trackNames:
                 selectedTracks.append(trackName.find_parent('trk'))
             combinedKml = ''
+            trackNo = 1
             for selectedTrack in selectedTracks:
-                if combineAllTracksForDate:
-                    timedate = datetime.fromisoformat(combinedDates.rstrip(', '))
-                else:
-                    date = re.findall('\d\d\d\d?-?\d?\d?-?\d?\d? ?\d?\d?:?\d?\d', selectedTrack.find('name').string)
-                    timedate = datetime.fromisoformat(date[0])
+                sys.stdout.write('Track %d of %d\r' % (trackNo, len(selectedTracks)))
+                sys.stdout.flush()
+                date = re.findall('\d\d\d\d?-?\d?\d?-?\d?\d? ?\d?\d?:?\d?\d', selectedTrack.find('name').string)
+                timedate = datetime.fromisoformat(date[0])
+                dates.append(timedate)
                 month = months[timedate.month]
                 weekday = weekdays[timedate.weekday()]
-                trackName = 'Our travels on %s %s %d, %d' % (weekday, month, timedate.day, timedate.year)
+                trackName = 'Our travels on %s, %s %d, %d' % (weekday, month, timedate.day, timedate.year)
                 comment = selectedTrack.find('cmt')
                 if comment:
                     cmt = comment.string
@@ -568,26 +573,45 @@ USAGE
                             sys.stderr.write(indent + "Either wait until you have a connection or leave off the -b flag\n")
                             return 2
                         if response.status_code == 200:
-                            blogUrl = url
+                            blogUrl = '<b>Blog post:</b> ' + url
                             found = True
                             break
                     if not found:
-                        blogUrl = 'unable to find blog URL'
+                        blogUrl = '<b>Blog Post:</b> unable to find blog URL'
                 description = '<![CDATA[<b>%s</b><br />%s]]>' % (cmt, blogUrl)
-                trackPlacemark = '<Placemark><styleUrl>#blue</styleUrl><name>%s</name><description>%s</description><LineString><coordinates>' % (trackName, description)
+                trackPlacemark = '<Placemark><styleUrl>#blue</styleUrl><name>%s</name><description>%s</description><LineString><coordinates>' % (trackName.title(), description)
                 combinedKml = combinedKml + trackPlacemark
                 trackSegs = selectedTrack.find_all('trkseg')
                 for trackSeg in trackSegs:
                     trackPoints = trackSeg.find_all('trkpt')
                     for trackPoint in trackPoints:
-                        combinedKml = combinedKml + trackPoint['lon'] + ',' + trackPoint['lat'] + ',' + trackPoint.find('ele').string + ' '
+                        elevation = trackPoint.find('ele')
+                        ele = '0'
+                        if elevation:
+                            ele= elevation.string
+                        combinedKml = combinedKml + trackPoint['lon'] + ',' + trackPoint['lat'] + ',' + ele + ' '
                 combinedKml = combinedKml.rstrip(' ') + '</coordinates></LineString></Placemark>'
                 if not noKmlPoints: 
-                    combinedKml = combinedKml + '<Placemark><styleUrl>#paddle-red-circle</styleUrl><name>%s</name><description>%s</description><Point><coordinates>%s,%s,%s</coordinates></Point></Placemark>' % (trackName, description, trackPoint['lon'], trackPoint['lat'], trackPoint.find('ele').string)
+                    combinedKml = combinedKml + '<Placemark><styleUrl>#paddle-red-circle</styleUrl><name>%s</name><description>%s</description><Point><coordinates>%s,%s,%s</coordinates></Point></Placemark>' % (trackName.title(), description, trackPoint['lon'], trackPoint['lat'], ele)
+                trackNo = trackNo + 1
+            sys.stdout.write('\n')
             if len(selectedTracks) > 1:
                 #make the final track red
                 combinedKml = (combinedKml[::-1].replace('eulb#','der#', 1))[::-1]
-            kmlOutString = kmlHead + '<name>Total Miles Travelled: %s</name>' % round(totalDistance) + combinedKml + kmlTail
+            if len(dates) > 1:
+                mapName = '<name>%s Miles Travelled between %s/%s/%s and %s/%s/%s</name>' %(round(totalDistance),
+                                                                               dates[0].month, 
+                                                                               dates[0].day, 
+                                                                               dates[0].year,
+                                                                               dates[-1].month,
+                                                                               dates[-1].day,
+                                                                               dates[-1].year)
+            else:
+                mapName = '<name>%s Miles Travelled on %s/%s/%s</name>' %(round(totalDistance),
+                                                                   dates[0].month, 
+                                                                   dates[0].day, 
+                                                                   dates[0].year)     
+            kmlOutString = kmlHead + mapName + combinedKml + kmlTail
             kmlOutputFile = outputFile.replace('.gpx', '.kml')
             try:
                 with open(kmlOutputFile, 'w') as f:
