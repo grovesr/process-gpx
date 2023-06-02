@@ -26,7 +26,7 @@ import requests
 
 from argparse import ArgumentParser
 from argparse import RawDescriptionHelpFormatter
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup as bs
 
 __all__ = []
@@ -225,12 +225,15 @@ USAGE
         parser.add_argument("-p", "--pretty", dest="prettify", action="store_true", help="prettify the output file", default=False)
         parser.add_argument("-k", "--kml", dest="genKml", action="store_true", help="generate a KML formatted file in addition to the gpx file", default=False)
         parser.add_argument("-n", "--nopoints", dest="noKmlPoints", action="store_true", help="in generated KML file remove point Placemarks", default=False)
-        parser.add_argument("-b", "--addBlogUrl", dest="addBlogUrl", action="store_true", help="In generated KML file add blog post URLs to the Placemarks", default=False)
-        parser.add_argument("-t", "--thinDistance", dest="thinDistance", help="thin out track points to reduce file size by removing all points within this distance in kilometers from each other [default: %(default)s]", default=0)
-        parser.add_argument("-r", "--thinOrientation", dest="thinOrientation", help="thin out track points to reduce file size by removing all points with an orientation aspect within this number of degrees of each other [default: %(default)s]", default=0)
+        parser.add_argument("-b", "--addblogurl", dest="addBlogUrl", action="store_true", help="In generated KML file add blog post URLs to the Placemarks", default=False)
+        parser.add_argument("-t", "--thindistance", dest="thinDistance", help="thin out track points to reduce file size by removing all points within this distance in kilometers from each other [default: %(default)s]", default=0)
+        parser.add_argument("-r", "--thinorientation", dest="thinOrientation", help="thin out track points to reduce file size by removing all points with an orientation aspect within this number of degrees of each other [default: %(default)s]", default=0)
+        parser.add_argument("--datetimecutoff", dest="datetimeCutoff", help="Skip all trackpoints after this time (ISO format yyy-mm-dd hh:mm))[default: %(default)s]", default='')
+        parser.add_argument("--timeoffsetfromutc", dest="timeOffsetFromUTC", help="Use this offset to compare --datetimecutoff to zulu times in gpx file (+/-hh:mm) [default: %(default)s]", default='')
         parser.add_argument("-d", "--date", dest="trackDatetimes", action="append", help="extract track from datetime (ISO format yyyy-mm-dd [hh:mm:ss]). Can be specified multiple times to append", default=[])
         parser.add_argument("-o", "--output", dest="outputFile", help="direct output to this destination [default: %(default)s]", default='extracted_track.gpx')
         parser.add_argument("-i", "--input", dest="inputFiles", action="append", help="source gpx file containing one or more tracks. Can be specified multiple times to search or combine multiple files", default=[])
+        
         # Process arguments
         try:
             args = parser.parse_args()
@@ -249,6 +252,8 @@ USAGE
         genKml = args.genKml
         addBlogUrl = args.addBlogUrl
         noKmlPoints = args.noKmlPoints
+        datetimeCutoff = args.datetimeCutoff
+        timeOffsetFromUTC = args.timeOffsetFromUTC
         if thinOrientation < 0:
             sys.stderr.write(program_name + ":\n")
             sys.stderr.write(indent + "thinOrientatio must be >= 0\n")
@@ -281,6 +286,10 @@ USAGE
             sys.stderr.write(program_name + ":\n")
             sys.stderr.write(indent + "you can't merge files (-m) and thin them as well\n")
             return 2
+        if timeOffsetFromUTC != '' and datetimeCutoff == '':
+            sys.stderr.write(program_name + ":\n")
+            sys.stderr.write(indent + "you specified a value for --timeoffsetfromutc, but didn't specify a cutoff time (--timecutoff)\n")
+            return 2
         parsedTrackDatetimes = {}
         for trackDatetime in trackDatetimes:
             try:
@@ -293,6 +302,24 @@ USAGE
                 parsedTrackDatetimes[checkedDatetime.strftime('%Y-%m-%d %H:%M')] = checkedDatetime
             else:
                 parsedTrackDatetimes[checkedDatetime.strftime('%Y-%m-%d')] = checkedDatetime
+        if datetimeCutoff != '':
+            try:
+                cutoffDatetime = datetime.fromisoformat(datetimeCutoff)
+            except Exception as e:
+                sys.stderr.write(program_name + ":\n")
+                sys.stderr.write(indent + repr(e)+"\n")
+                return 2
+            timeOffsetHours = 0
+            timeOffsetMinutes = 0
+            if timeOffsetFromUTC != '':
+                m = re.match('([+-]\d\d):(\d\d)',timeOffsetFromUTC)
+                if m is None:
+                    sys.stderr.write(program_name + ":\n")
+                    sys.stderr.write(indent + "value specified for --timeoffsetfromutc was not of the form +/-hh:mm [%s]\n" % timeOffsetFromUTC)
+                    return 2
+                timeOffsetHours = int(m.groups()[0])
+                timeOffsetMinutes = int(m.groups()[1])
+            cutoffDatetime = cutoffDatetime.replace(tzinfo=timezone(timedelta(hours=timeOffsetHours, minutes=timeOffsetMinutes)))
     except KeyboardInterrupt:
         ### handle keyboard interrupt ###
         return 0
@@ -330,7 +357,12 @@ USAGE
                     trackNames = gpxSoup('name', string=re.compile('Active Log'))
                     if trackNames is not None:
                         for name in trackNames:
-                            print(name.get_text())
+                            track = name.find_parent('trk')
+                            if track:
+                                trackSegs = track.find_all('trkseg')
+                                numTracks = len(trackSegs)
+                            sys.stdout.write('%s: (%d segments)\n' % (name.get_text(), numTracks))
+                            sys.stdout.flush()
                     else:
                         sys.stderr.write(program_name + ":\n")
                         sys.stderr.write(indent + "No Active Log tracks found in '" + inputFile+"'\n")
@@ -375,34 +407,64 @@ USAGE
                                     if not combineAllTracksForDate:
                                         trackDistance = 0
                                     track = trackName.find_parent('trk')
-                                    if thinDistance > 0 or thinOrientation > 0 or True:
-                                        trackSegs = track.find_all('trkseg')
-                                        for trackSeg in trackSegs:
-                                            segDistance = 0
-                                            trackPoint = trackSeg.find('trkpt')
-                                            if trackPoint is not None and trackPoint['lat'] is not None and trackPoint['lon'] is not None:
-                                                if trackPoint.find('course') is not None:
-                                                    course = int(float(trackPoint.find('course').string))
-                                                else:
-                                                    course = math.degrees(GeoLocation.MIN_COURSE)
-                                                    courseFound = False
-                                                geoLocation = GeoLocation.from_degrees(float(trackPoint['lat']), float(trackPoint['lon']), course)
-                                                prevTrackPoint = trackPoint
-                                                prevGeoLocation = GeoLocation.from_degrees(float(prevTrackPoint['lat']), float(prevTrackPoint['lon']), course)
-                                                nextTrackPoint = trackPoint.find_next_sibling('trkpt')
-                                                if nextTrackPoint is not None and nextTrackPoint['lat'] is not None and nextTrackPoint['lon'] is not None:
-                                                    foundLastTrackPoint = False
-                                                    while not foundLastTrackPoint:  
-                                                        if nextTrackPoint.find('course') is not None:
-                                                            course = int(float(nextTrackPoint.find('course').string))
-                                                        else:
-                                                            course = math.degrees(GeoLocation.MIN_COURSE)
-                                                            courseFound = False
-                                                        nextGeoLocation = GeoLocation.from_degrees(float(nextTrackPoint['lat']), float(nextTrackPoint['lon']), course)
-                                                        tempTrackPoint = nextTrackPoint.find_next_sibling('trkpt')
-                                                        segDistance = segDistance + prevGeoLocation.distance_to(nextGeoLocation)
-                                                        prevGeoLocation = nextGeoLocation
-                                                        foundLastTrackPoint = tempTrackPoint is None
+                                    trackSegs = track.find_all('trkseg')
+                                    for trackSeg in trackSegs:
+                                        segDistance = 0
+                                        trackPoint = trackSeg.find('trkpt')
+                                        if trackPoint is not None and trackPoint['lat'] is not None and trackPoint['lon'] is not None:
+                                            if trackPoint.find('course') is not None:
+                                                course = int(float(trackPoint.find('course').string))
+                                            else:
+                                                course = math.degrees(GeoLocation.MIN_COURSE)
+                                                courseFound = False
+                                            skipPoint = False
+                                            if datetimeCutoff != '' and not skipPoint:
+                                                #check the first trackpoint in the trackseg
+                                                # extract the trackpoint time and turn it into a datetime object for comparison
+                                                time = trackPoint.find('time')
+                                                if time is not None:
+                                                    mtime = re.match('(\d\d\d\d-\d\d-\d\d)T(\d\d:\d\d:\d\d)Z', time.string)
+                                                    if mtime is not None:
+                                                        trackPointDatetime = datetime.fromisoformat(mtime.groups()[0] + ' ' + mtime.groups()[1])
+                                                        trackPointDatetime = trackPointDatetime.replace(tzinfo=timezone(timedelta(hours=0)))
+                                                        if trackPointDatetime > cutoffDatetime:
+                                                            trackSeg.decompose()
+                                                            continue
+                                            geoLocation = GeoLocation.from_degrees(float(trackPoint['lat']), float(trackPoint['lon']), course)
+                                            prevTrackPoint = trackPoint
+                                            prevGeoLocation = GeoLocation.from_degrees(float(prevTrackPoint['lat']), float(prevTrackPoint['lon']), course)
+                                            nextTrackPoint = trackPoint.find_next_sibling('trkpt')
+                                            if nextTrackPoint is not None and nextTrackPoint['lat'] is not None and nextTrackPoint['lon'] is not None:
+                                                foundLastTrackPoint = False
+                                                while not foundLastTrackPoint:
+                                                    skipPoint = False
+                                                    if datetimeCutoff != '':
+                                                        # extract the trackpoint time and turn it into a datetime object for comparison
+                                                        time = nextTrackPoint.find('time')
+                                                        if time is not None:
+                                                            mtime = re.match('(\d\d\d\d-\d\d-\d\d)T(\d\d:\d\d:\d\d)Z', time.string)
+                                                            if mtime is not None:
+                                                                nextTrackPointDatetime = datetime.fromisoformat(mtime.groups()[0] + ' ' + mtime.groups()[1])
+                                                                nextTrackPointDatetime = nextTrackPointDatetime.replace(tzinfo=timezone(timedelta(hours=0)))
+                                                                if nextTrackPointDatetime > cutoffDatetime:
+                                                                    skipPoint = True
+                                                    if nextTrackPoint.find('course') is not None:
+                                                        course = int(float(nextTrackPoint.find('course').string))
+                                                    else:
+                                                        course = math.degrees(GeoLocation.MIN_COURSE)
+                                                        courseFound = False
+                                                    nextGeoLocation = GeoLocation.from_degrees(float(nextTrackPoint['lat']), float(nextTrackPoint['lon']), course)
+                                                    tempTrackPoint = nextTrackPoint.find_next_sibling('trkpt')
+                                                    segDistance = segDistance + prevGeoLocation.distance_to(nextGeoLocation)
+                                                    tempGeoLocation = prevGeoLocation
+                                                    prevGeoLocation = nextGeoLocation
+                                                    foundLastTrackPoint = tempTrackPoint is None
+                                                    if skipPoint:
+                                                        geoLocation = nextGeoLocation
+                                                        nextTrackPoint.decompose()
+                                                        segDistance = segDistance - tempGeoLocation.distance_to(nextGeoLocation)
+                                                        segDistance
+                                                    else:
                                                         if not thinDistance and not thinOrientation:
                                                             geoLocation = nextGeoLocation
                                                         if thinDistance:
@@ -419,8 +481,8 @@ USAGE
                                                                 geoLocation = nextGeoLocation
                                                             else:
                                                                 nextTrackPoint.decompose()
-                                                        nextTrackPoint = tempTrackPoint
-                                            trackDistance = trackDistance + segDistance
+                                                    nextTrackPoint = tempTrackPoint
+                                        trackDistance = trackDistance + segDistance
                                     if not combineAllTracksForDate and trackDistance > 0:
                                         comment = gpxSoup.new_tag('cmt')
                                         comment.string = 'Miles travelled: %s' % round(trackDistance*0.62)
