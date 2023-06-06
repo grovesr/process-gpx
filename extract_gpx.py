@@ -360,8 +360,20 @@ USAGE
                             track = name.find_parent('trk')
                             if track:
                                 trackSegs = track.find_all('trkseg')
-                                numTracks = len(trackSegs)
-                            sys.stdout.write('%s: (%d segments)\n' % (name.get_text(), numTracks))
+                                numSegs = len(trackSegs)
+                                sys.stdout.write('%s [%d]:\n' % (name.get_text(), numSegs))
+                                for trackSeg in trackSegs:
+                                    segPoints = trackSeg.find_all('trkpt')
+                                    numPoints = len(segPoints)
+                                    if segPoints:
+                                        firstPoint = segPoints[0]
+                                        firstTime = firstPoint.find_all('time')
+                                        if firstTime:
+                                            mtime = re.match('(\d\d\d\d-\d\d-\d\d)T(\d\d:\d\d:\d\d)Z', firstTime[0].string)
+                                            if mtime is not None:
+                                                trackPointDatetime = datetime.fromisoformat(mtime.groups()[0] + ' ' + mtime.groups()[1])
+                                                trackPointDatetime = trackPointDatetime.replace(tzinfo=timezone(timedelta(hours=0)))
+                                    sys.stdout.write(indent + '%s [%d]\n' % (trackPointDatetime.strftime('%m/%d/%Y %H:%M'), numPoints))
                             sys.stdout.flush()
                     else:
                         sys.stderr.write(program_name + ":\n")
@@ -689,7 +701,7 @@ USAGE
             return 2
     if DEBUG:
         print("trackDatetime: " + str(parsedTrackDatetimes))
-        print("inputFile: " + inputFile)
+        print("inputFile: " + str(inputFiles))
         print("outputFile: " + outputFile)
         print("Length of output file string: " + str(len(outString)))
         if genKml:
