@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 # encoding: utf-8
 '''
-extract_gpx -- extract a gpx track from a fle given a date
+extract_gpx -- extract a gpx track from a file given a date
 
 extract_gpx is a CLI program that extracts a single gpx track from a gpx file containing an arbitrary number of tracks
 
@@ -39,7 +39,7 @@ TESTRUN = 0
 PROFILE = 0
 
 months = ['', 'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']
-monthsShort = ['', 'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+monthsShort = ['', 'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sept', 'oct', 'nov', 'dec']
 weekdays = ['monday','tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
 weekdaysShort = ['mon','tues', 'wed', 'thu', 'fri', 'sat', 'sun']
 
