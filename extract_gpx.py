@@ -229,7 +229,6 @@ USAGE
         parser.add_argument("-t", "--thindistance", dest="thinDistance", help="thin out track points to reduce file size by removing all points within this distance in kilometers from each other [default: %(default)s]", default=0)
         parser.add_argument("-r", "--thinorientation", dest="thinOrientation", help="thin out track points to reduce file size by removing all points with an orientation aspect within this number of degrees of each other [default: %(default)s]", default=0)
         parser.add_argument("--datetimecutoff", dest="datetimeCutoff", help="Skip all trackpoints after this time (ISO format yyy-mm-dd hh:mm))[default: %(default)s]", default='')
-        parser.add_argument("--timeoffsetfromutc", dest="timeOffsetFromUTC", help="Use this offset to compare --datetimecutoff to zulu times in gpx file (+/-hh:mm) [default: %(default)s]", default='')
         parser.add_argument("-d", "--date", dest="trackDatetimes", action="append", help="extract track from datetime (ISO format yyyy-mm-dd [hh:mm:ss]). Can be specified multiple times to append", default=[])
         parser.add_argument("-o", "--output", dest="outputFile", help="direct output to this destination [default: %(default)s]", default='extracted_track.gpx')
         parser.add_argument("-i", "--input", dest="inputFiles", action="append", help="source gpx file containing one or more tracks. Can be specified multiple times to search or combine multiple files", default=[])
@@ -253,7 +252,6 @@ USAGE
         addBlogUrl = args.addBlogUrl
         noKmlPoints = args.noKmlPoints
         datetimeCutoff = args.datetimeCutoff
-        timeOffsetFromUTC = args.timeOffsetFromUTC
         if thinOrientation < 0:
             sys.stderr.write(program_name + ":\n")
             sys.stderr.write(indent + "thinOrientatio must be >= 0\n")
@@ -286,10 +284,6 @@ USAGE
             sys.stderr.write(program_name + ":\n")
             sys.stderr.write(indent + "you can't merge files (-m) and thin them as well\n")
             return 2
-        if timeOffsetFromUTC != '' and datetimeCutoff == '':
-            sys.stderr.write(program_name + ":\n")
-            sys.stderr.write(indent + "you specified a value for --timeoffsetfromutc, but didn't specify a cutoff time (--timecutoff)\n")
-            return 2
         parsedTrackDatetimes = {}
         for trackDatetime in trackDatetimes:
             try:
@@ -302,6 +296,7 @@ USAGE
                 parsedTrackDatetimes[checkedDatetime.strftime('%Y-%m-%d %H:%M')] = checkedDatetime
             else:
                 parsedTrackDatetimes[checkedDatetime.strftime('%Y-%m-%d')] = checkedDatetime
+        cutoffDatetime = None
         if datetimeCutoff != '':
             try:
                 cutoffDatetime = datetime.fromisoformat(datetimeCutoff)
@@ -309,17 +304,6 @@ USAGE
                 sys.stderr.write(program_name + ":\n")
                 sys.stderr.write(indent + repr(e)+"\n")
                 return 2
-            timeOffsetHours = 0
-            timeOffsetMinutes = 0
-            if timeOffsetFromUTC != '':
-                m = re.match('([+-]\d\d):(\d\d)',timeOffsetFromUTC)
-                if m is None:
-                    sys.stderr.write(program_name + ":\n")
-                    sys.stderr.write(indent + "value specified for --timeoffsetfromutc was not of the form +/-hh:mm [%s]\n" % timeOffsetFromUTC)
-                    return 2
-                timeOffsetHours = int(m.groups()[0])
-                timeOffsetMinutes = int(m.groups()[1])
-            cutoffDatetime = cutoffDatetime.replace(tzinfo=timezone(timedelta(hours=timeOffsetHours, minutes=timeOffsetMinutes)))
     except KeyboardInterrupt:
         ### handle keyboard interrupt ###
         return 0
@@ -357,14 +341,22 @@ USAGE
                     trackNames = gpxSoup('name', string=re.compile('Active Log'))
                     if trackNames is not None:
                         for name in trackNames:
+                            # extract the datetime from the current timezone
+                            mtime = re.match('^.*(\d\d\d\d-\d\d-\d\d) (\d\d:\d\d)$', name.string)
+                            trackDatetime = None
+                            if mtime is not None:
+                                trackDatetime = datetime.fromisoformat(mtime.groups()[0] + ' ' + mtime.groups()[1])
                             track = name.find_parent('trk')
                             if track:
                                 trackSegs = track.find_all('trkseg')
                                 numSegs = len(trackSegs)
-                                sys.stdout.write('%s [%d]:\n' % (name.get_text(), numSegs))
+                                sys.stdout.write('%s [%d segment]:\n' % (name.get_text(), numSegs))
+                                timeOffset = None
                                 for trackSeg in trackSegs:
                                     segPoints = trackSeg.find_all('trkpt')
                                     numPoints = len(segPoints)
+                                    trackPointDatetime = None
+                                    trackPointDatetimeAware = None
                                     if segPoints:
                                         firstPoint = segPoints[0]
                                         firstTime = firstPoint.find_all('time')
@@ -372,8 +364,13 @@ USAGE
                                             mtime = re.match('(\d\d\d\d-\d\d-\d\d)T(\d\d:\d\d:\d\d)Z', firstTime[0].string)
                                             if mtime is not None:
                                                 trackPointDatetime = datetime.fromisoformat(mtime.groups()[0] + ' ' + mtime.groups()[1])
-                                                trackPointDatetime = trackPointDatetime.replace(tzinfo=timezone(timedelta(hours=0)))
-                                    sys.stdout.write(indent + '%s [%d]\n' % (trackPointDatetime.strftime('%m/%d/%Y %H:%M'), numPoints))
+                                                if timeOffset is None:
+                                                    timeOffset = trackDatetime-trackPointDatetime
+                                                trackPointDatetimeAware = trackPointDatetime.replace(tzinfo=timezone(timedelta(hours=0)))
+                                    if trackPointDatetimeAware:
+                                        sys.stdout.write(indent + '%s UTC%+d[%d pts]\n' % ((trackPointDatetimeAware+timeOffset).strftime('%m/%d/%Y %H:%M'), (timeOffset.days*60*60*24+timeOffset.seconds)/60/60, numPoints))
+                                    else:
+                                        sys.stdout.write(indent + 'no datetime in trkpt [%d]\n' % numPoints)
                             sys.stdout.flush()
                     else:
                         sys.stderr.write(program_name + ":\n")
@@ -416,11 +413,19 @@ USAGE
                                 combinedTracks = ''
                                 trackDistance = 0
                                 for trackName in tracksForDates[trackDatetimeString + fileIndex]['trackNames']:
+                                    # extract the datetime from the current timezone
+                                    mtime = re.match('^.*(\d\d\d\d-\d\d-\d\d) (\d\d:\d\d)$', trackName.string)
+                                    trackDatetime = None
+                                    if mtime is not None:
+                                        trackDatetime = datetime.fromisoformat(mtime.groups()[0] + ' ' + mtime.groups()[1])
+                                    timeOffset = None
                                     if not combineAllTracksForDate:
                                         trackDistance = 0
                                     track = trackName.find_parent('trk')
                                     trackSegs = track.find_all('trkseg')
                                     for trackSeg in trackSegs:
+                                        trackPointDatetime = None
+                                        trackPointDatetimeAware = None
                                         segDistance = 0
                                         trackPoint = trackSeg.find('trkpt')
                                         if trackPoint is not None and trackPoint['lat'] is not None and trackPoint['lon'] is not None:
@@ -430,7 +435,7 @@ USAGE
                                                 course = math.degrees(GeoLocation.MIN_COURSE)
                                                 courseFound = False
                                             skipPoint = False
-                                            if datetimeCutoff != '' and not skipPoint:
+                                            if cutoffDatetime is not None and not skipPoint:
                                                 #check the first trackpoint in the trackseg
                                                 # extract the trackpoint time and turn it into a datetime object for comparison
                                                 time = trackPoint.find('time')
@@ -438,8 +443,9 @@ USAGE
                                                     mtime = re.match('(\d\d\d\d-\d\d-\d\d)T(\d\d:\d\d:\d\d)Z', time.string)
                                                     if mtime is not None:
                                                         trackPointDatetime = datetime.fromisoformat(mtime.groups()[0] + ' ' + mtime.groups()[1])
-                                                        trackPointDatetime = trackPointDatetime.replace(tzinfo=timezone(timedelta(hours=0)))
-                                                        if trackPointDatetime > cutoffDatetime:
+                                                        if timeOffset is None:
+                                                            timeOffset = trackDatetime-trackPointDatetime
+                                                        if (trackPointDatetime + timeOffset) > cutoffDatetime:
                                                             trackSeg.decompose()
                                                             continue
                                             geoLocation = GeoLocation.from_degrees(float(trackPoint['lat']), float(trackPoint['lon']), course)
@@ -450,15 +456,14 @@ USAGE
                                                 foundLastTrackPoint = False
                                                 while not foundLastTrackPoint:
                                                     skipPoint = False
-                                                    if datetimeCutoff != '':
+                                                    if cutoffDatetime is not None:
                                                         # extract the trackpoint time and turn it into a datetime object for comparison
                                                         time = nextTrackPoint.find('time')
                                                         if time is not None:
                                                             mtime = re.match('(\d\d\d\d-\d\d-\d\d)T(\d\d:\d\d:\d\d)Z', time.string)
                                                             if mtime is not None:
                                                                 nextTrackPointDatetime = datetime.fromisoformat(mtime.groups()[0] + ' ' + mtime.groups()[1])
-                                                                nextTrackPointDatetime = nextTrackPointDatetime.replace(tzinfo=timezone(timedelta(hours=0)))
-                                                                if nextTrackPointDatetime > cutoffDatetime:
+                                                                if (nextTrackPointDatetime + timeOffset) > cutoffDatetime:
                                                                     skipPoint = True
                                                     if nextTrackPoint.find('course') is not None:
                                                         course = int(float(nextTrackPoint.find('course').string))
@@ -512,6 +517,7 @@ USAGE
                                             combinedDates = combinedDates + trackDatetimeObject.strftime('%Y-%m-%d %H:%M') + ', '
                                         trackString = trackString.replace('<trk>', '').replace('</trk>', '')
                                     combinedTracks = combinedTracks + trackString
+                                totalDistance = totalDistance + trackDistance * 0.62
                                 selectedTracks.append(combinedTracks)      
                     if tracksFound > 0:
                         if tracksFound > 1  and not combineAllTracksForDate:
@@ -525,7 +531,6 @@ USAGE
                     sys.stderr.write(program_name + ":\n")
                     sys.stderr.write(indent + repr(e)+"\n")
                     return 2
-        totalDistance = totalDistance + trackDistance * 0.62
     if len(selectedTracks) == 0:
         sys.stderr.write(indent + "No matching tracks found for '" + str(parsedTrackDatetimes.keys()) + "' in file(s) '" + str(inputFiles) + "'\n")
         return 2
