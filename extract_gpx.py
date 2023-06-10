@@ -229,6 +229,8 @@ USAGE
         parser.add_argument("-t", "--thindistance", dest="thinDistance", help="thin out track points to reduce file size by removing all points within this distance in kilometers from each other [default: %(default)s]", default=0)
         parser.add_argument("-r", "--thinorientation", dest="thinOrientation", help="thin out track points to reduce file size by removing all points with an orientation aspect within this number of degrees of each other [default: %(default)s]", default=0)
         parser.add_argument("--datetimecutoff", dest="datetimeCutoff", help="Skip all trackpoints after this time (ISO format yyy-mm-dd hh:mm))[default: %(default)s]", default='')
+        parser.add_argument("--obfuscatelonglat", dest="obfuscateLongLat", help="Don't put out any trackpoints within --obfuscatedist (in km) from these 'long,lat' coords [default: %(default)s]", default='-73.998303,41.749026')
+        parser.add_argument("--obfuscatedist", dest="obfuscateDist", help="Don't put out any trackpoints within --obfuscatedist (in km) from --obfuscatelonglat [default: %(default)s]", default=0)
         parser.add_argument("-d", "--date", dest="trackDatetimes", action="append", help="extract track from datetime (ISO format yyyy-mm-dd [hh:mm:ss]). Can be specified multiple times to append", default=[])
         parser.add_argument("-o", "--output", dest="outputFile", help="direct output to this destination [default: %(default)s]", default='extracted_track.gpx')
         parser.add_argument("-i", "--input", dest="inputFiles", action="append", help="source gpx file containing one or more tracks. Can be specified multiple times to search or combine multiple files", default=[])
@@ -252,6 +254,8 @@ USAGE
         addBlogUrl = args.addBlogUrl
         noKmlPoints = args.noKmlPoints
         datetimeCutoff = args.datetimeCutoff
+        obfuscateDist = int(args.obfuscateDist)
+        obfuscateLongLat = args.obfuscateLongLat
         if thinOrientation < 0:
             sys.stderr.write(program_name + ":\n")
             sys.stderr.write(indent + "thinOrientatio must be >= 0\n")
@@ -284,6 +288,34 @@ USAGE
             sys.stderr.write(program_name + ":\n")
             sys.stderr.write(indent + "you can't merge files (-m) and thin them as well\n")
             return 2
+        obfuscatePoint = None
+        if obfuscateDist > 0:
+            ll = re.split(',', obfuscateLongLat)
+            if len(ll) > 2 or len(ll) < 2:
+                sys.stderr.write(program_name + ":\n")
+                sys.stderr.write(indent + "the coordinates you specified in --obfuscatelonglat were not valid [%s]\n" % obfuscateLongLat)
+                return 2
+            try:
+                obfuscateLong = float(ll[0])
+                if math.radians(obfuscateLong) < GeoLocation.MIN_LON or math.radians(obfuscateLong) > GeoLocation.MAX_LON:
+                    sys.stderr.write(program_name + ":\n")
+                    sys.stderr.write(indent + "the longitude coordinate you specified in --obfuscatelonglat was out of range [%s]\n" % obfuscateLongLat)
+                    return 2
+            except ValueError as e:
+                sys.stderr.write(program_name + ":\n")
+                sys.stderr.write(indent + "the longitude coordinate you specified in --obfuscatelonglat were not valid [%s]\n" % obfuscateLongLat)
+                return 2
+            try:
+                obfuscateLat = float(ll[1])
+                if math.radians(obfuscateLat) < GeoLocation.MIN_LAT or math.radians(obfuscateLong) > GeoLocation.MAX_LAT:
+                    sys.stderr.write(program_name + ":\n")
+                    sys.stderr.write(indent + "the latitude coordinate you specified in --obfuscatelonglat was out of range [%s]\n" % obfuscateLongLat)
+                    return 2
+            except ValueError as e:
+                sys.stderr.write(program_name + ":\n")
+                sys.stderr.write(indent + "the latitude coordinate you specified in --obfuscatelonglat were not valid [%s]\n" % obfuscateLongLat)
+                return 2
+            obfuscatePoint = GeoLocation.from_degrees(obfuscateLat, obfuscateLong, math.degrees(GeoLocation.MIN_COURSE))
         parsedTrackDatetimes = {}
         for trackDatetime in trackDatetimes:
             try:
@@ -321,6 +353,9 @@ USAGE
     if not extractDates:
         sys.stdout.write('Generating GPX file...\n')
         sys.stdout.flush()
+    thinnedPoints = 0
+    obfuscatedPoints = 0
+    cutoffPoints = 0
     for inputFile in inputFiles:
         fileIndex = inputFile.split('/')[-1].split('.')[0]
         try:
@@ -436,7 +471,7 @@ USAGE
                                                 courseFound = False
                                             skipPoint = False
                                             if cutoffDatetime is not None and not skipPoint:
-                                                #check the first trackpoint in the trackseg
+                                                # check the first trackpoint in the trackseg
                                                 # extract the trackpoint time and turn it into a datetime object for comparison
                                                 time = trackPoint.find('time')
                                                 if time is not None:
@@ -446,12 +481,19 @@ USAGE
                                                         if timeOffset is None:
                                                             timeOffset = trackDatetime-trackPointDatetime
                                                         if (trackPointDatetime + timeOffset) > cutoffDatetime:
+                                                            # decompose the entire segment if the first trackpoint is beyond the cutoff datetime
                                                             trackSeg.decompose()
+                                                            cutoffPoints += len(trackSeg.find_all('trkpt'))
                                                             continue
                                             geoLocation = GeoLocation.from_degrees(float(trackPoint['lat']), float(trackPoint['lon']), course)
                                             prevTrackPoint = trackPoint
                                             prevGeoLocation = GeoLocation.from_degrees(float(prevTrackPoint['lat']), float(prevTrackPoint['lon']), course)
                                             nextTrackPoint = trackPoint.find_next_sibling('trkpt')
+                                            # check to see if we should obfuscate the first trackpoint in this seg if so, decompose it
+                                            if obfuscatePoint is not None:
+                                                if geoLocation.distance_to(obfuscatePoint) < obfuscateDist:
+                                                    trackPoint.decompose()
+                                                    obfuscatedPoints += 1
                                             if nextTrackPoint is not None and nextTrackPoint['lat'] is not None and nextTrackPoint['lon'] is not None:
                                                 foundLastTrackPoint = False
                                                 while not foundLastTrackPoint:
@@ -479,6 +521,7 @@ USAGE
                                                     if skipPoint:
                                                         geoLocation = nextGeoLocation
                                                         nextTrackPoint.decompose()
+                                                        cutoffPoints += 1
                                                         segDistance = segDistance - tempGeoLocation.distance_to(nextGeoLocation)
                                                         segDistance
                                                     else:
@@ -489,6 +532,7 @@ USAGE
                                                                 geoLocation = nextGeoLocation
                                                             else:
                                                                 nextTrackPoint.decompose()
+                                                                thinnedPoints += 1
                                                         if thinOrientation:
                                                             if not courseFound:
                                                                 sys.stderr.write(program_name + ":\n")
@@ -498,7 +542,14 @@ USAGE
                                                                 geoLocation = nextGeoLocation
                                                             else:
                                                                 nextTrackPoint.decompose()
-                                                    nextTrackPoint = tempTrackPoint
+                                                                thinnedPoints += 1
+                                                        if nextTrackPoint.contents:
+                                                            # this trackpoint has not been decomposed yet
+                                                            if obfuscatePoint is not None:
+                                                                if prevGeoLocation.distance_to(obfuscatePoint) < obfuscateDist:
+                                                                    nextTrackPoint.decompose()
+                                                                    obfuscatedPoints += 1
+                                                        nextTrackPoint = tempTrackPoint
                                         trackDistance = trackDistance + segDistance
                                     if not combineAllTracksForDate and trackDistance > 0:
                                         comment = gpxSoup.new_tag('cmt')
@@ -712,6 +763,13 @@ USAGE
         if genKml:
             print("kmlOutputFile: " + kmlOutputFile)
             print("Length of KML output file string: " + str(len(kmlOutString)))
+        if obfuscatedPoints > 0:
+            print('Obfuscated Points: %d' % obfuscatedPoints)
+        if cutoffPoints > 0:
+            print('Cutoff Datetime Points: %d' % cutoffPoints)
+        if thinnedPoints > 0:
+            print('Thinned Points: %d' % thinnedPoints)
+        
     return 0
 
 if __name__ == "__main__":
