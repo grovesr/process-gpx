@@ -225,6 +225,7 @@ USAGE
         parser.add_argument("-p", "--pretty", dest="prettify", action="store_true", help="prettify the output file", default=False)
         parser.add_argument("-k", "--kml", dest="genKml", action="store_true", help="generate a KML formatted file in addition to the gpx file", default=False)
         parser.add_argument("-n", "--nopoints", dest="noKmlPoints", action="store_true", help="in generated KML file remove point Placemarks", default=False)
+        parser.add_argument("--finalredpoints", dest="finalRedPoints", action="store_false", help="in generated KML file with multiple tracks make final track red", default=False)
         parser.add_argument("-b", "--addblogurl", dest="addBlogUrl", action="store_true", help="In generated KML file add blog post URLs to the Placemarks", default=False)
         parser.add_argument("-t", "--thindistance", dest="thinDistance", help="thin out track points to reduce file size by removing all points within this distance in kilometers from each other [default: %(default)s]", default=0)
         parser.add_argument("-r", "--thinorientation", dest="thinOrientation", help="thin out track points to reduce file size by removing all points with an orientation aspect within this number of degrees of each other [default: %(default)s]", default=0)
@@ -256,6 +257,7 @@ USAGE
         datetimeCutoff = args.datetimeCutoff
         obfuscateDist = int(args.obfuscateDist)
         obfuscateLongLat = args.obfuscateLongLat
+        finalRedPoints = args.finalRedPoints
         if thinOrientation < 0:
             sys.stderr.write(program_name + ":\n")
             sys.stderr.write(indent + "thinOrientatio must be >= 0\n")
@@ -725,7 +727,7 @@ USAGE
                     combinedKml = combinedKml + '<Placemark><styleUrl>#paddle-red-circle</styleUrl><name>%s</name><description>%s</description><Point><coordinates>%s,%s,%s</coordinates></Point></Placemark>' % (trackName.title(), description, trackPoint['lon'], trackPoint['lat'], ele)
                 trackNo = trackNo + 1
             sys.stdout.write('\n')
-            if len(selectedTracks) > 1:
+            if len(selectedTracks) > 1 and finalRedPoints:
                 #make the final track red
                 combinedKml = (combinedKml[::-1].replace('eulb#','der#', 1))[::-1]
             if len(dates) > 1:
