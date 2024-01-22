@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/home/grovesr/.virtualenvs/extract_gpx/bin/python3
 # encoding: utf-8
 '''
 extract_gpx -- extract a gpx track from a file given a date
